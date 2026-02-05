@@ -6,6 +6,7 @@ import numpy as np
 import io
 import chardet
 import os
+import base64
 
 # 1. 페이지 설정 및 UI 상수
 st.set_page_config(page_title="MIC Analysis Tool", page_icon="🎙️", layout="wide")
@@ -162,6 +163,13 @@ def plot_bell_curve_set(config, df, test_data, stats_indices, sel_idx, for_excel
     plt.tight_layout()
     return fig
 
+def get_base64_image(img_path):
+    if os.path.exists(img_path):
+        with open(img_path, "rb") as f:
+            data = f.read()
+        return base64.b64encode(data).decode()
+    return None
+
 # 4. [메인 프로세스]
 uploaded_file = st.sidebar.file_uploader("CSV 로그 파일을 업로드하세요.", type=['csv'])
 
@@ -221,8 +229,31 @@ if uploaded_file:
             total_qty, total_fail = len(test_data), len(issue_indices); total_pass = total_qty - total_fail; yield_val = total_pass / total_qty * 100
             with d1: st.markdown(f"**Model P/N:** `{detected_pn}`\n\n**Prod. Date:** `{prod_date}`\n\n**Quantity:** `{len(test_data)} EA`")
             with d2:
-                st.markdown(f"""<div style="display: flex; gap: 8px;"><div style="background-color: #f8f9fa; padding: 10px 15px; border-radius: 10px; border-left: 5px solid #28a745; flex: 1;"><p style="margin:0; font-size:11px; color:#6c757d; font-weight:bold;">PASS</p><p style="margin:0; font-size:24px; font-weight:800; color:#28a745;">{total_pass}</p></div><div style="background-color: #f8f9fa; padding: 10px 15px; border-radius: 10px; border-left: 5px solid #dc3545; flex: 1;"><p style="margin:0; font-size:11px; color:#6c757d; font-weight:bold;">FAIL</p><p style="margin:0; font-size:24px; font-weight:800; color:#dc3545;">{total_fail}</p></div></div>""", unsafe_allow_html=True)
-                st.markdown(f"<p style='margin-top:10px; font-weight:bold; font-size:20px;'>Overall Yield: {yield_val:.1f}%</p>", unsafe_allow_html=True)
+                # 1. PASS / FAIL 요약 카드
+                st.markdown(f"""
+                <div style="display: flex; gap: 8px;">
+                    <div style="background-color: #f8f9fa; padding: 10px 15px; border-radius: 10px; border-left: 5px solid #28a745; flex: 1;">
+                        <p style="margin:0; font-size:11px; color:#6c757d; font-weight:bold;">PASS</p>
+                        <p style="margin:0; font-size:24px; font-weight:800; color:#28a745;">{total_pass}</p>
+                    </div>
+                    <div style="background-color: #f8f9fa; padding: 10px 15px; border-radius: 10px; border-left: 5px solid #dc3545; flex: 1;">
+                        <p style="margin:0; font-size:11px; color:#6c757d; font-weight:bold;">FAIL</p>
+                        <p style="margin:0; font-size:24px; font-weight:800; color:#dc3545;">{total_fail}</p>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # 2. Overall Yield 문구와 Progress Bar 통합 제어 (간격 최소화)
+                st.markdown(f"""
+                    <div style="margin-top: 10px;">
+                        <p style="margin-bottom: 0px; font-weight: bold; font-size: 20px;">
+                            Overall Yield: {yield_val:.1f}%
+                        </p>
+                        <div style="width: 100%; background-color: #e0e0e0; border-radius: 5px; border: 1px solid #bdc3c7; margin-top: 2px;">
+                            <div style="width: {yield_val}%; background-color: #2ecc71; height: 12px; border-radius: 4px;"></div>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
             with d3:
                 s_rows = []
                 for ch_n, stat in ch_stats_data.items():
@@ -321,11 +352,32 @@ if uploaded_file:
                             curr_r += 1
                 return output.getvalue()
 
+            # --- 사이드바 최하단 Excel Export 섹션 ---
             st.sidebar.markdown("---")
+
+            img_base64 = get_base64_image("excel_icon.png")
+
+            if img_base64:
+                # [Fix] HTML/CSS를 사용하여 이미지와 텍스트의 높이를 맞추고 글자 크기를 키움
+                st.sidebar.markdown(
+                    f"""
+                    <div style="display: flex; align-items: center; margin-bottom: 10px;">
+                        <img src="data:image/png;base64,{img_base64}" width="38" style="margin-right: 12px;">
+                        <span style="font-size: 24px; font-weight: 700; color: #31333f;">Excel Export</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+            else:
+                st.sidebar.header("📊 Excel Export")
+
+            # 헤더 바로 아래에 다운로드 버튼 배치
             st.sidebar.download_button(
-                label="📥 Excel Export",
+                label="📥 Download Report",
                 data=generate_excel(),
-                file_name=f"MIC_Report_{detected_pn}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                file_name=f"MIC_Report_{detected_pn}_{prod_date.replace('/','')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True # 버튼을 사이드바 너비에 맞게 꽉 채움
             )
+
 else: st.info("사이드바에서 CSV 로그 파일을 업로드하세요.")
