@@ -14,8 +14,7 @@ FIG_WIDTH, PLOT_HEIGHT = 14, 6
 FONT_SIZE_TITLE, FONT_SIZE_AXIS = 16, 12
 
 # --- [미세조정 설정값] ---
-X_OFFSET = 10  
-Y_OFFSET = 10  
+X_OFFSET, Y_OFFSET = 10, 10 
 # -----------------------
 
 # --- [상단 헤더] ---
@@ -26,13 +25,13 @@ with col_head2:
     if os.path.exists("logo.png"): st.image("logo.png", width=300)
 st.markdown("---")
 
-# 2. 제품군 설정
+# 2. 제품군 설정 (명칭: Digital MIC / Analog MIC 통일)
 PRODUCT_CONFIGS = {
-    "RH": {"pn": ["96575N1100", "96575GJ100"], "channels": [{"name": "Digital Ch1", "type": "digital", "range": range(51, 101), "thd_idx": 15}, {"name": "Digital Ch2", "type": "digital", "range": range(103, 153), "thd_idx": 18}, {"name": "Digital Ch3", "type": "digital", "range": range(155, 205), "thd_idx": 21}]},
-    "3903(LH Ecall)": {"pn": ["96575N1050", "96575GJ000"], "channels": [{"name": "Ecall Mic (Analog)", "type": "analog", "range": range(6, 47), "thd_idx": 69}, {"name": "Digital Ch1", "type": "digital", "range": range(107, 157), "thd_idx": 217}, {"name": "Digital Ch2", "type": "digital", "range": range(159, 209), "thd_idx": 220}]},
-    "3203(LH non Ecall)": {"pn": ["96575N1000", "96575GJ010"], "channels": [{"name": "Digital Ch1", "type": "digital", "range": range(6, 56), "thd_idx": 116}, {"name": "Digital Ch2", "type": "digital", "range": range(58, 108), "thd_idx": 119}]},
-    "LITE(LH)": {"pn": ["96575NR000", "96575GJ200"], "channels": [{"name": "Analog Mic", "type": "analog", "range": range(6, 47), "thd_idx": 95}]},
-    "LITE(RH)": {"pn": ["96575NR100", "96575GJ300"], "channels": [{"name": "Analog Mic", "type": "analog", "range": range(6, 47), "thd_idx": 95}]}
+    "RH": {"pn": ["96575N1100", "96575GJ100"], "channels": [{"name": "Digital MIC1", "type": "digital", "range": range(51, 101), "thd_idx": 15}, {"name": "Digital MIC2", "type": "digital", "range": range(103, 153), "thd_idx": 18}, {"name": "Digital MIC3", "type": "digital", "range": range(155, 205), "thd_idx": 21}]},
+    "3903(LH Ecall)": {"pn": ["96575N1050", "96575GJ000"], "channels": [{"name": "Ecall MIC (Analog)", "type": "analog", "range": range(6, 47), "thd_idx": 69}, {"name": "Digital MIC1", "type": "digital", "range": range(107, 157), "thd_idx": 217}, {"name": "Digital MIC2", "type": "digital", "range": range(159, 209), "thd_idx": 220}]},
+    "3203(LH non Ecall)": {"pn": ["96575N1000", "96575GJ010"], "channels": [{"name": "Digital MIC1", "type": "digital", "range": range(6, 56), "thd_idx": 116}, {"name": "Digital MIC2", "type": "digital", "range": range(58, 108), "thd_idx": 119}]},
+    "LITE(LH)": {"pn": ["96575NR000", "96575GJ200"], "channels": [{"name": "Analog MIC", "type": "analog", "range": range(6, 47), "thd_idx": 95}]},
+    "LITE(RH)": {"pn": ["96575NR100", "96575GJ300"], "channels": [{"name": "Analog MIC", "type": "analog", "range": range(6, 47), "thd_idx": 95}]}
 }
 
 # 3. [유틸리티 함수]
@@ -111,62 +110,34 @@ def plot_bell_curve_set(config, df, test_data, stats_indices, sel_idx, for_excel
     fig, axes = plt.subplots(num_draw, 1, figsize=(FIG_WIDTH, PLOT_HEIGHT * num_draw))
     if num_draw == 1: axes = [axes]
     if for_excel: fig.patch.set_linewidth(0)
-    
     for i in range(num_draw):
         ax = axes[i]
         if i < len(config["channels"]):
-            ch = config["channels"][i]
-            # 1kHz 데이터 컬럼 찾기
-            col_name = df.columns[ch["range"]][np.argmin(np.abs(np.array(get_freq_values(df.columns[ch["range"]])) - 1000))]
-            v_all = pd.to_numeric(test_data[col_name], errors='coerce')
-            
-            # [수정] stats_indices (정상 + Margin Out) 시료만으로 통계량 계산
+            ch = config["channels"][i]; col_idx = np.argmin(np.abs(np.array(get_freq_values(df.columns[ch["range"]])) - 1000))
+            v_all = pd.to_numeric(test_data[df.columns[ch["range"]][col_idx]], errors='coerce')
             v_clean = v_all.iloc[stats_indices].dropna()
-            
             lcl, ucl = (-11, -9) if ch["type"] == 'analog' else (-38, -36)
-            
             if len(v_clean) >= 2:
                 mu, std = v_clean.mean(), v_clean.std()
                 cpk = min((ucl-mu)/(3*std), (mu-lcl)/(3*std)) if std > 0 else 0
-                
-                # 종형 곡선 그리기
-                x_r = np.linspace(lcl - 2, ucl + 2, 200)
-                p = (1/(std * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x_r - mu) / std)**2)
-                ax.plot(x_r, p, 'k', lw=2.5, alpha=0.7)
-                ax.fill_between(x_r, p, color='gray', alpha=0.1)
-                
-                # 스펙 라인
-                ax.axvline(lcl, color='blue', ls='--', lw=1.5)
-                ax.axvline(ucl, color='red', ls='--', lw=1.5)
-                
-                # --- [붉은 점 표시 기능 복구] ---
+                x_r = np.linspace(lcl - 2, ucl + 2, 200); p = (1/(std * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x_r - mu) / std)**2)
+                ax.plot(x_r, p, 'k', lw=2.5, alpha=0.7); ax.fill_between(x_r, p, color='gray', alpha=0.1)
+                ax.axvline(lcl, color='blue', ls='--', lw=1.5); ax.axvline(ucl, color='red', ls='--', lw=1.5)
+                # 붉은 점 표시 (사이즈 200 적용)
                 if sel_idx:
-                    # 선택된 시료들의 값을 가져옴
                     sel_v = v_all.iloc[sel_idx].dropna()
                     for v in sel_v:
-                        # 현재 곡선의 확률 밀도 함수(PDF) 상의 높이 계산
                         if std > 0:
                             p_v = (1/(std * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((v - mu) / std)**2)
                             ax.scatter(v, p_v, color='red', s=200, zorder=5, edgecolors='white', linewidth=1.5)
-                # ------------------------------
-
-                # Cpk 텍스트 및 제목 설정
-                ax.text(0.95, 0.75, "Cpk: " + str(round(cpk, 2)), transform=ax.transAxes, 
-                        ha='right', va='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8), 
-                        fontsize=FONT_SIZE_AXIS, fontweight='bold')
-                ax.set_title(f"{ch['name']} - Distribution", fontsize=FONT_SIZE_TITLE, fontweight='bold', pad=15)
-                ax.set_xlim(lcl-2, ucl+2)
-                ax.grid(True, alpha=0.2)
-        else:
-            ax.axis('off')
-            
-    plt.tight_layout()
-    return fig
+                ax.text(0.95, 0.75, "Cpk: " + str(round(cpk, 2)), transform=ax.transAxes, ha='right', va='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8), fontsize=FONT_SIZE_AXIS, fontweight='bold')
+                ax.set_title(f"{ch['name']} - Distribution", fontsize=FONT_SIZE_TITLE, fontweight='bold', pad=15); ax.set_xlim(lcl-2, ucl+2); ax.grid(True, alpha=0.2)
+        else: ax.axis('off')
+    plt.tight_layout(); return fig
 
 def get_base64_image(img_path):
     if os.path.exists(img_path):
-        with open(img_path, "rb") as f:
-            data = f.read()
+        with open(img_path, "rb") as f: data = f.read()
         return base64.b64encode(data).decode()
     return None
 
@@ -185,7 +156,6 @@ if uploaded_file:
         model_type = st.sidebar.selectbox("제품 모델 선택", options=model_list, index=model_list.index(detected_model) if detected_model in model_list else 0)
         config = PRODUCT_CONFIGS[model_type]; st.sidebar.markdown("---")
         
-        # [수정] 정상 시료 설정 문구 및 헤더 적용
         st.sidebar.header("✔️ 정상 시료 설정")
         show_normal = st.sidebar.checkbox("정상 시료 FR 표시", value=True)
 
@@ -199,13 +169,12 @@ if uploaded_file:
 
             for idx, row in test_data.iterrows():
                 row_res = []
-                is_pure_normal = True; is_fail = False; is_defect_sample = False
+                is_pure_normal, is_fail, is_defect = True, False, False
                 for ch in config["channels"]:
                     cols = df.columns[ch["range"]]; freqs = get_freq_values(cols)
                     status = classify_sample(row, cols, freqs, limit_low, limit_high)
-                    if status == "Defect": is_defect_sample = True
-                    if status != "Normal": is_pure_normal = False; is_fail = True
-                    
+                    if status == "Defect": is_defect = True
+                    if status != "Normal": is_pure_normal, is_fail = False, True
                     val_1k = pd.to_numeric(row[cols[np.argmin(np.abs(np.array(freqs) - 1000))]], errors='coerce')
                     ch_stats_data[ch["name"]]["vals_1k"].append(val_1k)
                     if status == "Normal": ch_stats_data[ch["name"]]["pass"] += 1
@@ -215,10 +184,7 @@ if uploaded_file:
                 sample_info[idx] = {"table": pd.DataFrame(row_res), "sn": clean_sn(row[sn_col])}
                 if is_fail: issue_indices.append(idx)
                 if is_pure_normal: plotting_normal_indices.append(idx)
-                
-                # [수정] 정상 + Margin Out 만 정규분포 통계에 포함 (Defect 제외)
-                if not is_defect_sample:
-                    stats_indices.append(idx)
+                if not is_defect: stats_indices.append(idx)
 
             st.sidebar.markdown("---"); st.sidebar.header("❌️ 결함 시료 선택")
             sel_idx = [i for i in issue_indices if st.sidebar.checkbox(f"SN: {sample_info[i]['sn']}", key=f"ch_{i}")]
@@ -227,9 +193,9 @@ if uploaded_file:
             st.subheader("📝 Production Dashboard")
             d1, d2, d3 = st.columns([1.2, 1.3, 2.5])
             total_qty, total_fail = len(test_data), len(issue_indices); total_pass = total_qty - total_fail; yield_val = total_pass / total_qty * 100
+            
             with d1: st.markdown(f"**Model P/N:** `{detected_pn}`\n\n**Prod. Date:** `{prod_date}`\n\n**Quantity:** `{len(test_data)} EA`")
             with d2:
-                # 1. PASS / FAIL 요약 카드
                 st.markdown(f"""
                 <div style="display: flex; gap: 8px;">
                     <div style="background-color: #f8f9fa; padding: 10px 15px; border-radius: 10px; border-left: 5px solid #28a745; flex: 1;">
@@ -241,38 +207,53 @@ if uploaded_file:
                         <p style="margin:0; font-size:24px; font-weight:800; color:#dc3545;">{total_fail}</p>
                     </div>
                 </div>
-                """, unsafe_allow_html=True)
-                
-                # 2. Overall Yield 문구와 Progress Bar 통합 제어 (간격 최소화)
-                st.markdown(f"""
-                    <div style="margin-top: 10px;">
-                        <p style="margin-bottom: 0px; font-weight: bold; font-size: 20px;">
-                            Overall Yield: {yield_val:.1f}%
-                        </p>
-                        <div style="width: 100%; background-color: #e0e0e0; border-radius: 5px; border: 1px solid #bdc3c7; margin-top: 2px;">
-                            <div style="width: {yield_val}%; background-color: #2ecc71; height: 12px; border-radius: 4px;"></div>
-                        </div>
+                <div style="margin-top: 10px;">
+                    <p style="margin-bottom: 0px; font-weight: bold; font-size: 20px;">Overall Yield: {yield_val:.1f}%</p>
+                    <div style="width: 100%; background-color: #e0e0e0; border-radius: 5px; border: 1px solid #bdc3c7; margin-top: 2px;">
+                        <div style="width: {yield_val}%; background-color: #2ecc71; height: 12px; border-radius: 4px;"></div>
                     </div>
+                </div>
                 """, unsafe_allow_html=True)
+
             with d3:
-                s_rows = []
+                s_html = """<table style="width:100%; border-collapse:collapse; border:1px solid #bdc3c7; font-size:13px; text-align:center;">
+                <thead style="background-color:#F2F2F2; font-weight:bold;">
+                <tr><th rowspan="2" style="border:1px solid #bdc3c7; padding:8px;">Channel</th><th colspan="7" style="border:1px solid #bdc3c7; padding:8px;">Statistics</th></tr>
+                <tr><th style="border:1px solid #bdc3c7; padding:5px;">Pass</th><th style="border:1px solid #bdc3c7; padding:5px;">Fail</th><th style="border:1px solid #bdc3c7; padding:5px;">Yield</th><th style="border:1px solid #bdc3c7; padding:5px;">Min</th><th style="border:1px solid #bdc3c7; padding:5px;">Max</th><th style="border:1px solid #bdc3c7; padding:5px;">Avg</th><th style="border:1px solid #bdc3c7; padding:5px;">Stdev</th></tr>
+                </thead><tbody>"""
                 for ch_n, stat in ch_stats_data.items():
-                    # 통계 행도 stats_indices(Defect 제외) 기준으로 표시하도록 필터링 적용 가능 (선택 사항)
-                    # 여기서는 전체 경향을 위해 전체 데이터 사용, 그래프만 필터링하도록 설계됨
                     v = np.array(stat["vals_1k"])[stats_indices]; v = v[~np.isnan(v)]
                     v_min, v_max, v_avg, v_std = (v.min(), v.max(), v.mean(), v.std()) if len(v) > 0 else (0,0,0,0)
-                    s_rows.append({"Channel": ch_n, "Pass": stat["pass"], "Fail": stat["fail"], "Yield": f"{(stat['pass']/total_qty)*100:.1f}%", "Min": f"{v_min:.2f}", "Max": f"{v_max:.2f}", "Avg": f"{v_avg:.2f}", "Stdev": f"{v_std:.2f}"})
-                ch_sum_df = pd.DataFrame(s_rows); st.dataframe(ch_sum_df, hide_index=True, width=1200)
+                    yld = f"{(stat['pass']/total_qty)*100:.1f}%"
+                    s_html += f"<tr><td style='border:1px solid #bdc3c7; padding:5px; font-weight:bold; background-color:#F9F9F9;'>{ch_n}</td>"
+                    s_html += f"<td style='border:1px solid #bdc3c7; padding:5px;'>{stat['pass']}</td><td style='border:1px solid #bdc3c7; padding:5px;'>{stat['fail']}</td>"
+                    s_html += f"<td style='border:1px solid #bdc3c7; padding:5px;'>{yld}</td><td style='border:1px solid #bdc3c7; padding:5px;'>{v_min:.2f}</td>"
+                    s_html += f"<td style='border:1px solid #bdc3c7; padding:5px;'>{v_max:.2f}</td><td style='border:1px solid #bdc3c7; padding:5px;'>{v_avg:.2f}</td><td style='border:1px solid #bdc3c7; padding:5px;'>{v_std:.2f}</td></tr>"
+                s_html += "</tbody></table>"
+                st.markdown(s_html, unsafe_allow_html=True)
             
             st.markdown("---"); tab_fr, tab_dist, tab_detail = st.tabs(["📈 주파수 응답 (FR)", "📉 정규분포 (Cpk)", "🔍 결함 시료 상세"])
             with tab_fr: st.pyplot(create_fr_plot(config, df, test_data, limit_low, limit_high, show_normal, plotting_normal_indices, sel_idx))
             with tab_dist: st.pyplot(plot_bell_curve_set(config, df, test_data, stats_indices, sel_idx))
             with tab_detail:
                 if sel_idx:
-                    for i in sel_idx: st.write(f"📄 **SN: {sample_info[i]['sn']}**"); st.table(sample_info[i]["table"].set_index("Channel"))
+                    for idx in sel_idx:
+                        st.markdown(f"📄 **SN: {sample_info[idx]['sn']}**", unsafe_allow_html=True)
+                        p_html = """<table style="width:100%; border-collapse:collapse; border:1px solid #bdc3c7; font-size:13px; text-align:center; margin-bottom:20px;">
+                        <thead style="background-color:#F2F2F2; font-weight:bold;">
+                        <tr><th rowspan="3" style="border:1px solid #bdc3c7; padding:8px;">Channel</th><th colspan="5" style="border:1px solid #bdc3c7; padding:8px;">Parameter</th></tr>
+                        <tr><th colspan="3" style="border:1px solid #bdc3c7; padding:5px;">Frequency Response</th><th style="border:1px solid #bdc3c7; padding:5px;">THD</th><th rowspan="2" style="border:1px solid #bdc3c7; padding:5px;">Status</th></tr>
+                        <tr><th style="border:1px solid #bdc3c7; padding:5px;">200Hz</th><th style="border:1px solid #bdc3c7; padding:5px;">1000Hz</th><th style="border:1px solid #bdc3c7; padding:5px;">4000Hz</th><th style="border:1px solid #bdc3c7; padding:5px;">1kHz</th></tr>
+                        </thead><tbody>"""
+                        for _, r in sample_info[idx]['table'].iterrows():
+                            p_html += f"<tr><td style='border:1px solid #bdc3c7; padding:5px; font-weight:bold; background-color:#F9F9F9;'>{r['Channel']}</td>"
+                            p_html += f"<td style='border:1px solid #bdc3c7; padding:5px;'>{r['200Hz']}</td><td style='border:1px solid #bdc3c7; padding:5px;'>{r['1000Hz']}</td><td style='border:1px solid #bdc3c7; padding:5px;'>{r['4000Hz']}</td>"
+                            p_html += f"<td style='border:1px solid #bdc3c7; padding:5px;'>{r['THD']}</td><td style='border:1px solid #bdc3c7; padding:5px;'>{r['Status']}</td></tr>"
+                        p_html += "</tbody></table>"
+                        st.markdown(p_html, unsafe_allow_html=True)
                 else: st.warning("결함 시료를 선택하세요.")
 
-            # --- [엑셀 Export 통합 함수] ---
+            # --- [엑셀 Export 로직: 검증된 Stable 버전 이식] ---
             def generate_excel():
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -281,7 +262,7 @@ if uploaded_file:
                     base_green = {'bold': True, 'bg_color': '#E2EFDA', 'align': 'center', 'valign': 'vcenter', 'border': 1}
                     base_yld = {'bold': True, 'font_size': 18, 'font_color': '#2E7D32', 'align': 'center', 'valign': 'vcenter', 'border': 1}
                     base_thin = {'align': 'center', 'valign': 'vcenter', 'border': 1}
-                    sn_bg = '#F2F2F2'
+                    base_grey = {'bold': True, 'bg_color': '#F2F2F2', 'align': 'center', 'valign': 'vcenter', 'border': 1}
 
                     def get_fmt(base_props, top=1, bottom=1, left=1, right=1):
                         props = base_props.copy(); props.update({'top': top, 'bottom': bottom, 'left': left, 'right': right})
@@ -301,83 +282,64 @@ if uploaded_file:
                         ws.merge_range('E3:F3', total_pass, workbook.add_format(base_thin))
                         ws.write(3, 3, 'FAIL', workbook.add_format(base_blue))
                         ws.merge_range('E4:F4', total_fail, workbook.add_format(base_thin))
-                        ws.merge_range('D5:F6', "Yield: " + str(round(yield_val, 1)) + "%", get_fmt(base_yld, bottom=2))
+                        ws.merge_range('D5:F6', f"Yield: {yield_val:.1f}%", get_fmt(base_yld, bottom=2))
 
-                        heads = ch_sum_df.columns.tolist()
-                        for i, h in enumerate(heads): ws.write(2, 6+i, h, get_fmt(base_green, right=2 if 6+i==13 else 1))
-                        for r_idx in range(4):
-                            r = 3 + r_idx; is_last = (r == 5)
-                            if r_idx < len(ch_sum_df):
-                                r_v = ch_sum_df.iloc[r_idx]
-                                ws.write(r, 6, r_v[heads[0]], get_fmt(base_thin, bottom=2 if is_last else 1))
-                                for c_idx in range(1, 8): ws.write(r, 6+c_idx, r_v[heads[c_idx]], get_fmt(base_thin, right=2 if 6+c_idx==13 else 1, bottom=2 if is_last else 1))
-                            else:
-                                for c_idx in range(8): ws.write_blank(r, 6+c_idx, "", workbook.add_format({'right': 2 if 6+c_idx==13 else 0, 'bottom': 2 if is_last else 0}))
+                        # [핵심] N열 우측 테두리 연속성 확보 루프
+                        h_heads = ["Channel", "Pass", "Fail", "Yield", "Min", "Max", "Avg", "Stdev"]
+                        for i, h in enumerate(h_heads): ws.write(2, 6+i, h, get_fmt(base_green, right=2 if 6+i==13 else 1))
+                        
+                        for r_idx in range(4): # 3, 4, 5, 6행 고정
+                            r = 3 + r_idx; is_l = (r == 5)
+                            if r_idx < len(config["channels"]):
+                                ch_n = config["channels"][r_idx]["name"]; stat = ch_stats_data[ch_n]
+                                v = np.array(stat["vals_1k"])[stats_indices]; v = v[~np.isnan(v)]
+                                v_min, v_max, v_avg, v_std = (v.min(), v.max(), v.mean(), v.std()) if len(v) > 0 else (0,0,0,0)
+                                ws.write(r, 6, ch_n, get_fmt(base_thin, bottom=2 if is_l else 1))
+                                vals = [stat['pass'], stat['fail'], f"{(stat['pass']/total_qty)*100:.1f}%", f"{v_min:.2f}", f"{v_max:.2f}", f"{v_avg:.2f}", f"{v_std:.2f}"]
+                                for i, val in enumerate(vals): ws.write(r, 7+i, val, get_fmt(base_thin, right=2 if 7+i==13 else 1, bottom=2 if is_l else 1))
+                            else: # 데이터 부족 시에도 테두리 유지
+                                for c_idx in range(8):
+                                    col = 6 + c_idx
+                                    ws.write_blank(r, col, "", workbook.add_format({'right': 2 if col==13 else 0, 'bottom': 2 if is_l else 0}))
 
+                        # [핵심] 차트 영역 외곽 기둥 잔선 제거
                         for r_f in range(6, last_row_idx - 1):
-                            ws.write_blank(r_f, 1, "", workbook.add_format({'left': 2, 'right': 0})); ws.write_blank(r_f, 13, "", workbook.add_format({'right': 2, 'left': 0}))
+                            ws.write_blank(r_f, 1, "", workbook.add_format({'left': 2, 'right': 0}))
+                            ws.write_blank(r_f, 13, "", workbook.add_format({'right': 2, 'left': 0}))
                         ws.write_blank(last_row_idx-1, 1, "", workbook.add_format({'left': 2, 'bottom': 2, 'right': 0}))
                         for c_bot in range(2, 13): ws.write_blank(last_row_idx-1, c_bot, "", workbook.add_format({'bottom': 2, 'top': 0, 'left': 0, 'right': 0}))
                         ws.write_blank(last_row_idx-1, 13, "", workbook.add_format({'right': 2, 'bottom': 2, 'left': 0}))
 
-                    # Sheet 1
                     ws1 = workbook.add_worksheet('📈 분석 리포트'); write_dashboard(ws1, 37)
                     fig_fr = create_fr_plot(config, df, test_data, limit_low, limit_high, show_normal, plotting_normal_indices, sel_idx, for_excel=True)
                     buf_f = io.BytesIO(); fig_fr.savefig(buf_f, format='png', dpi=100); plt.close(fig_fr)
-                    ws1.insert_image('B7', 'fr.png', {'image_data': buf_f, 'x_scale': 0.41, 'y_scale': 0.35, 'x_offset': X_OFFSET, 'y_offset': Y_OFFSET})
+                    ws1.insert_image('B7', 'fr.png', {'image_data': buf_f, 'x_scale': 0.41, 'y_scale': 0.35, 'x_offset': 10, 'y_offset': 10})
                     fig_dist = plot_bell_curve_set(config, df, test_data, stats_indices, sel_idx, for_excel=True)
                     buf_d = io.BytesIO(); fig_dist.savefig(buf_d, format='png', dpi=100); plt.close(fig_dist)
-                    ws1.insert_image('H7', 'dist.png', {'image_data': buf_d, 'x_scale': 0.41, 'y_scale': 0.35, 'x_offset': X_OFFSET, 'y_offset': Y_OFFSET})
+                    ws1.insert_image('H7', 'dist.png', {'image_data': buf_d, 'x_scale': 0.41, 'y_scale': 0.35, 'x_offset': 10, 'y_offset': 10})
 
-                    # Sheet 2: 결함상세
                     ws2 = workbook.add_worksheet('🔍 결함상세')
                     last_f_row = max(37, 9 + (len(sel_idx) * 6)) if sel_idx else 37
                     write_dashboard(ws2, last_f_row)
-                    ws2.merge_range('B8:N8', '🔍 DETAILED FAILURE LOG', workbook.add_format({**base_blue, 'left': 2, 'right': 2}))
-                    
+                    ws2.merge_range('B8:N8', '🔍 DETAILED FAILURE LOG', get_fmt(base_blue, left=2, right=2))
                     curr_r = 9
                     if sel_idx:
                         for i in sel_idx:
-                            ws2.write(curr_r, 1, sample_info[i]['sn'], get_fmt({'bold':True, 'bg_color':sn_bg, 'border':1, 'align':'left'}, left=2))
-                            ws2.write_blank(curr_r, 2, "", get_fmt({'bg_color':sn_bg, 'border':1}))
+                            ws2.write(curr_r, 1, sample_info[i]['sn'], get_fmt({'bold':True, 'bg_color':'#F2F2F2', 'border':1, 'align':'left'}, left=2))
+                            ws2.write_blank(curr_r, 2, "", get_fmt({'bg_color':'#F2F2F2', 'border':1})); curr_r += 1
+                            h_cols = ["Channel", "200Hz", "1000Hz", "4000Hz", "THD", "Status"]
+                            for c_i, h in enumerate(h_cols): ws2.write(curr_r, 1+c_i, h, get_fmt(base_blue, left=2 if 1+c_i==1 else 1, right=2 if 1+c_i==13 else 1))
                             curr_r += 1
-                            f_df = sample_info[i]['table']; cols = f_df.columns.tolist()
-                            for c_i, h in enumerate(cols):
-                                ws2.write(curr_r, 1+c_i, h, get_fmt(base_blue, left=2 if 1+c_i==1 else 1, right=2 if 1+c_i==13 else 1))
-                            curr_r += 1
-                            for r_i, r_v in f_df.iterrows():
-                                for c_i, h in enumerate(cols):
-                                    ws2.write(curr_r, 1+c_i, r_v[h], get_fmt(base_thin, left=2 if 1+c_i==1 else 1, right=2 if 1+c_i==13 else 1))
+                            for _, r_v in sample_info[i]['table'].iterrows():
+                                for c_i, h in enumerate(h_cols): ws2.write(curr_r, 1+c_i, r_v[h], get_fmt(base_thin, left=2 if 1+c_i==1 else 1, right=2 if 1+c_i==13 else 1))
                                 curr_r += 1
                             curr_r += 1
                 return output.getvalue()
 
-            # --- 사이드바 최하단 Excel Export 섹션 ---
             st.sidebar.markdown("---")
-
-            img_base64 = get_base64_image("excel_icon.png")
-
-            if img_base64:
-                # [Fix] HTML/CSS를 사용하여 이미지와 텍스트의 높이를 맞추고 글자 크기를 키움
-                st.sidebar.markdown(
-                    f"""
-                    <div style="display: flex; align-items: center; margin-bottom: 10px;">
-                        <img src="data:image/png;base64,{img_base64}" width="38" style="margin-right: 12px;">
-                        <span style="font-size: 24px; font-weight: 700; color: #31333f;">Excel Export</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-            else:
-                st.sidebar.header("📊 Excel Export")
-
-            # 헤더 바로 아래에 다운로드 버튼 배치
-            st.sidebar.download_button(
-                label="📥 Download Report",
-                data=generate_excel(),
-                file_name=f"MIC_Report_{detected_pn}_{prod_date.replace('/','')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True # 버튼을 사이드바 너비에 맞게 꽉 채움
-            )
-
+            img_b64 = get_base64_image("excel_icon.png")
+            if img_b64:
+                st.sidebar.markdown(f'<div style="display: flex; align-items: center; margin-bottom: 10px;"><img src="data:image/png;base64,{img_b64}" width="38" style="margin-right: 12px;"><span style="font-size: 24px; font-weight: 700; color: #31333f;">Excel Export</span></div>', unsafe_allow_html=True)
+            else: st.sidebar.header("📊 Excel Export")
+            st.sidebar.download_button(label="📥 Download Report", data=generate_excel(), file_name=f"Report_{detected_pn}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 else: st.info("사이드바에서 CSV 로그 파일을 업로드하세요.")
