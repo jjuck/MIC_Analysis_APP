@@ -25,7 +25,7 @@ with col_head2:
     if os.path.exists("logo.png"): st.image("logo.png", width=300)
 st.markdown("---")
 
-# 2. 제품군 설정 (명칭: Digital MIC / Analog MIC 통일)
+# 2. 제품군 설정
 PRODUCT_CONFIGS = {
     "RH": {"pn": ["96575N1100", "96575GJ100"], "channels": [{"name": "Digital MIC1", "type": "digital", "range": range(51, 101), "thd_idx": 15}, {"name": "Digital MIC2", "type": "digital", "range": range(103, 153), "thd_idx": 18}, {"name": "Digital MIC3", "type": "digital", "range": range(155, 205), "thd_idx": 21}]},
     "3903(LH Ecall)": {"pn": ["96575N1050", "96575GJ000"], "channels": [{"name": "Ecall MIC (Analog)", "type": "analog", "range": range(6, 47), "thd_idx": 69}, {"name": "Digital MIC1", "type": "digital", "range": range(107, 157), "thd_idx": 217}, {"name": "Digital MIC2", "type": "digital", "range": range(159, 209), "thd_idx": 220}]},
@@ -123,7 +123,6 @@ def plot_bell_curve_set(config, df, test_data, stats_indices, sel_idx, for_excel
                 x_r = np.linspace(lcl - 2, ucl + 2, 200); p = (1/(std * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x_r - mu) / std)**2)
                 ax.plot(x_r, p, 'k', lw=2.5, alpha=0.7); ax.fill_between(x_r, p, color='gray', alpha=0.1)
                 ax.axvline(lcl, color='blue', ls='--', lw=1.5); ax.axvline(ucl, color='red', ls='--', lw=1.5)
-                # 붉은 점 표시 (사이즈 200 적용)
                 if sel_idx:
                     sel_v = v_all.iloc[sel_idx].dropna()
                     for v in sel_v:
@@ -253,63 +252,77 @@ if uploaded_file:
                         st.markdown(p_html, unsafe_allow_html=True)
                 else: st.warning("결함 시료를 선택하세요.")
 
-            # --- [엑셀 Export 로직: 검증된 Stable 버전 이식] ---
+            # --- [엑셀 Export 로직: 프레임 보정 통합본] ---
             def generate_excel():
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     workbook = writer.book
+                    
+                    # 1. 서식 베이스 속성 정의
                     base_blue = {'bold': True, 'bg_color': '#DEEAF6', 'align': 'center', 'valign': 'vcenter', 'border': 1}
                     base_green = {'bold': True, 'bg_color': '#E2EFDA', 'align': 'center', 'valign': 'vcenter', 'border': 1}
-                    base_yld = {'bold': True, 'font_size': 18, 'font_color': '#2E7D32', 'align': 'center', 'valign': 'vcenter', 'border': 1}
                     base_thin = {'align': 'center', 'valign': 'vcenter', 'border': 1}
-                    base_grey = {'bold': True, 'bg_color': '#F2F2F2', 'align': 'center', 'valign': 'vcenter', 'border': 1}
+                    base_yld_val = {'bold': True, 'font_size': 18, 'font_color': '#2E7D32', 'align': 'center', 'valign': 'vcenter', 'border': 1, 'num_format': '0.0%'}
 
-                    def get_fmt(base_props, top=1, bottom=1, left=1, right=1):
-                        props = base_props.copy(); props.update({'top': top, 'bottom': bottom, 'left': left, 'right': right})
+                    # 1. 헬퍼 함수 수정 (기본 테두리 제거하여 격자 방지)
+                    def get_fmt(base_dict, top=None, bottom=None, left=None, right=None):
+                        props = base_dict.copy()
+                        if top is not None: props['top'] = top
+                        if bottom is not None: props['bottom'] = bottom
+                        if left is not None: props['left'] = left
+                        if right is not None: props['right'] = right
                         return workbook.add_format(props)
 
                     def write_dashboard(ws, last_row_idx=37):
                         ws.set_column('A:A', 3); ws.set_column('B:B', 15); ws.set_column('C:C', 22); ws.set_column('D:F', 10); ws.set_column('G:N', 11)
-                        ws.merge_range('B2:F2', '📝 PRODUCTION SUMMARY', get_fmt(base_blue, top=2, left=2))
-                        ws.merge_range('G2:N2', '📈 CHANNEL STATISTICS', get_fmt(base_green, top=2, right=2))
+                        # 상단 프레임 (B2:N2)
+                        ws.merge_range('B2:F2', '📝 PRODUCTION SUMMARY', get_fmt(base_blue, top=2, left=2, bottom=1, right=1))
+                        ws.merge_range('G2:N2', '📈 CHANNEL STATISTICS', get_fmt(base_green, top=2, right=2, bottom=1, left=1))
                         
+                        # Summary (B3:C6)
                         sums = [("Model Type", model_type), ("Model P/N", detected_pn), ("Prod. Date", prod_date), ("Quantity", str(total_qty) + " EA")]
                         for i, (k, v) in enumerate(sums):
-                            r = 2 + i; ws.write(r, 1, k, get_fmt(base_blue, left=2, bottom=2 if r==5 else 1))
-                            ws.write(r, 2, v, get_fmt(base_thin, bottom=2 if r==5 else 1))
+                            r = 2 + i
+                            ws.write(r, 1, k, get_fmt(base_blue, left=2, bottom=2 if r==5 else 1, top=1, right=1))
+                            ws.write(r, 2, v, get_fmt(base_thin, bottom=2 if r==5 else 1, top=1, left=1, right=1))
                         
-                        ws.write(2, 3, 'PASS', workbook.add_format(base_blue))
-                        ws.merge_range('E3:F3', total_pass, workbook.add_format(base_thin))
-                        ws.write(3, 3, 'FAIL', workbook.add_format(base_blue))
-                        ws.merge_range('E4:F4', total_fail, workbook.add_format(base_thin))
-                        ws.merge_range('D5:F6', f"Yield: {yield_val:.1f}%", get_fmt(base_yld, bottom=2))
+                        # PASS/FAIL/Yield (D3:F6)
+                        ws.write(2, 3, 'PASS', get_fmt(base_blue, top=1, bottom=1, left=1, right=1))
+                        ws.merge_range('E3:F3', total_pass, get_fmt(base_thin, top=1, bottom=1, left=1, right=1))
+                        ws.write(3, 3, 'FAIL', get_fmt(base_blue, top=1, bottom=1, left=1, right=1))
+                        ws.merge_range('E4:F4', total_fail, get_fmt(base_thin, top=1, bottom=1, left=1, right=1))
+                        ws.merge_range('D5:D6', 'Yield', get_fmt(base_blue, top=1, bottom=2, left=1, right=1))
+                        ws.merge_range('E5:F6', yield_val/100, get_fmt(base_yld_val, top=1, bottom=2, left=1, right=1))
 
-                        # [핵심] N열 우측 테두리 연속성 확보 루프
-                        h_heads = ["Channel", "Pass", "Fail", "Yield", "Min", "Max", "Avg", "Stdev"]
-                        for i, h in enumerate(h_heads): ws.write(2, 6+i, h, get_fmt(base_green, right=2 if 6+i==13 else 1))
+                        # Statistics (G3:N6)
+                        ws.write(2, 6, "MIC", get_fmt(base_green, top=1, bottom=1, left=1, right=1))
+                        heads = ["Pass", "Fail", "Yield", "Min", "Max", "Avg", "Stdev"]
+                        for i, h in enumerate(heads):
+                            ws.write(2, 7+i, h, get_fmt(base_green, right=2 if 7+i==13 else 1, top=1, bottom=1, left=1))
                         
-                        for r_idx in range(4): # 3, 4, 5, 6행 고정
+                        for r_idx in range(4):
                             r = 3 + r_idx; is_l = (r == 5)
                             if r_idx < len(config["channels"]):
                                 ch_n = config["channels"][r_idx]["name"]; stat = ch_stats_data[ch_n]
                                 v = np.array(stat["vals_1k"])[stats_indices]; v = v[~np.isnan(v)]
                                 v_min, v_max, v_avg, v_std = (v.min(), v.max(), v.mean(), v.std()) if len(v) > 0 else (0,0,0,0)
-                                ws.write(r, 6, ch_n, get_fmt(base_thin, bottom=2 if is_l else 1))
+                                ws.write(r, 6, ch_n, get_fmt(base_thin, bottom=2 if is_l else 1, top=1, left=1, right=1))
                                 vals = [stat['pass'], stat['fail'], f"{(stat['pass']/total_qty)*100:.1f}%", f"{v_min:.2f}", f"{v_max:.2f}", f"{v_avg:.2f}", f"{v_std:.2f}"]
-                                for i, val in enumerate(vals): ws.write(r, 7+i, val, get_fmt(base_thin, right=2 if 7+i==13 else 1, bottom=2 if is_l else 1))
-                            else: # 데이터 부족 시에도 테두리 유지
-                                for c_idx in range(8):
-                                    col = 6 + c_idx
-                                    ws.write_blank(r, col, "", workbook.add_format({'right': 2 if col==13 else 0, 'bottom': 2 if is_l else 0}))
+                                for i, val in enumerate(vals): ws.write(r, 7+i, val, get_fmt(base_thin, right=2 if 7+i==13 else 1, bottom=2 if is_l else 1, top=1, left=1))
+                            else:
+                                for c in range(6, 14): ws.write_blank(r, c, "", get_fmt({'border':0}, right=2 if c==13 else 0, bottom=2 if is_l else 0, left=1 if c==6 else 0))
 
-                        # [핵심] 차트 영역 외곽 기둥 잔선 제거
+                        # [보정 포인트] 하단 프레임 영역의 내부 실선 제거
                         for r_f in range(6, last_row_idx - 1):
-                            ws.write_blank(r_f, 1, "", workbook.add_format({'left': 2, 'right': 0}))
-                            ws.write_blank(r_f, 13, "", workbook.add_format({'right': 2, 'left': 0}))
-                        ws.write_blank(last_row_idx-1, 1, "", workbook.add_format({'left': 2, 'bottom': 2, 'right': 0}))
-                        for c_bot in range(2, 13): ws.write_blank(last_row_idx-1, c_bot, "", workbook.add_format({'bottom': 2, 'top': 0, 'left': 0, 'right': 0}))
-                        ws.write_blank(last_row_idx-1, 13, "", workbook.add_format({'right': 2, 'bottom': 2, 'left': 0}))
+                            ws.write_blank(r_f, 1, "", get_fmt({'border':0}, left=2)) # 왼쪽 굵은 기둥만
+                            ws.write_blank(r_f, 13, "", get_fmt({'border':0}, right=2)) # 오른쪽 굵은 기둥만
+                        
+                        # 최하단 굵은 가로선 마감
+                        ws.write_blank(last_row_idx-1, 1, "", get_fmt({'border':0}, left=2, bottom=2))
+                        for c_b in range(2, 13): ws.write_blank(last_row_idx-1, c_b, "", get_fmt({'border':0}, bottom=2))
+                        ws.write_blank(last_row_idx-1, 13, "", get_fmt({'border':0}, right=2, bottom=2))
 
+                    # --- 분석 리포트 ---
                     ws1 = workbook.add_worksheet('📈 분석 리포트'); write_dashboard(ws1, 37)
                     fig_fr = create_fr_plot(config, df, test_data, limit_low, limit_high, show_normal, plotting_normal_indices, sel_idx, for_excel=True)
                     buf_f = io.BytesIO(); fig_fr.savefig(buf_f, format='png', dpi=100); plt.close(fig_fr)
@@ -318,20 +331,53 @@ if uploaded_file:
                     buf_d = io.BytesIO(); fig_dist.savefig(buf_d, format='png', dpi=100); plt.close(fig_dist)
                     ws1.insert_image('H7', 'dist.png', {'image_data': buf_d, 'x_scale': 0.41, 'y_scale': 0.35, 'x_offset': 10, 'y_offset': 10})
 
+                    # --- 결함상세 (3단 계층 헤더) ---
                     ws2 = workbook.add_worksheet('🔍 결함상세')
-                    last_f_row = max(37, 9 + (len(sel_idx) * 6)) if sel_idx else 37
-                    write_dashboard(ws2, last_f_row)
-                    ws2.merge_range('B8:N8', '🔍 DETAILED FAILURE LOG', get_fmt(base_blue, left=2, right=2))
+                    l_f_row = max(37, 14 + (len(sel_idx) * 6)) if sel_idx else 37
+                    write_dashboard(ws2, l_f_row)
+                    ws2.merge_range('B8:N8', '🔍 DETAILED FAILURE LOG', get_fmt(base_blue, left=2, right=2, top=1, bottom=1))
+                    
                     curr_r = 9
                     if sel_idx:
                         for i in sel_idx:
-                            ws2.write(curr_r, 1, sample_info[i]['sn'], get_fmt({'bold':True, 'bg_color':'#F2F2F2', 'border':1, 'align':'left'}, left=2))
-                            ws2.write_blank(curr_r, 2, "", get_fmt({'bg_color':'#F2F2F2', 'border':1})); curr_r += 1
-                            h_cols = ["Channel", "200Hz", "1000Hz", "4000Hz", "THD", "Status"]
-                            for c_i, h in enumerate(h_cols): ws2.write(curr_r, 1+c_i, h, get_fmt(base_blue, left=2 if 1+c_i==1 else 1, right=2 if 1+c_i==13 else 1))
+                            # SN 바: B열부터 N열까지 전체 병합하여 프레임 완성
+                            ws2.merge_range(curr_r, 1, curr_r, 13, sample_info[i]['sn'], get_fmt({'bold':True, 'bg_color':'#F2F2F2', 'border':1}, left=2, right=2))
                             curr_r += 1
+                            
+                            # [3단 계층 헤더 정밀 보정]
+                            # Tier 1 (curr_r): MIC 세로병합, Parameter 가로병합
+                            ws2.merge_range(curr_r, 1, curr_r+2, 1, 'MIC', get_fmt(base_blue, left=2))
+                            ws2.merge_range(curr_r, 2, curr_r, 5, 'Parameter', workbook.add_format(base_blue))
+                            # Status 옆 11행 영역은 비워둠
+                            ws2.write_blank(curr_r, 6, "", workbook.add_format({'border':1}))
+                            for c in range(7, 13): ws2.write_blank(curr_r, c, "", workbook.add_format({'border':0}))
+                            ws2.write_blank(curr_r, 13, "", get_fmt({'border':0}, right=2))
+                            curr_r += 1
+                            
+                            # Tier 2 (curr_r): FR 가로병합, THD 단일, Status 세로병합 시작
+                            ws2.merge_range(curr_r, 2, curr_r, 4, 'Frequency Response', workbook.add_format(base_blue))
+                            ws2.write(curr_r, 5, 'THD', workbook.add_format(base_blue))
+                            ws2.merge_range(curr_r, 6, curr_r+1, 6, 'Status', workbook.add_format(base_blue))
+                            for c in range(7, 13): ws2.write_blank(curr_r, c, "", workbook.add_format({'border':0}))
+                            ws2.write_blank(curr_r, 13, "", get_fmt({'border':0}, right=2))
+                            curr_r += 1
+                            
+                            # Tier 3 (curr_r): 200Hz, 1kHz, 4kHz, THD 1kHz
+                            t3_heads = ['200Hz', '1kHz', '4kHz', '1kHz']
+                            for c_idx, h in enumerate(t3_heads): ws2.write(curr_r, 2+c_idx, h, workbook.add_format(base_blue))
+                            for c in range(7, 13): ws2.write_blank(curr_r, c, "", workbook.add_format({'border':0}))
+                            ws2.write_blank(curr_r, 13, "", get_fmt({'border':0}, right=2))
+                            curr_r += 1
+                            
+                            # 데이터 행: 우측 격자 무늬 제거
                             for _, r_v in sample_info[i]['table'].iterrows():
-                                for c_i, h in enumerate(h_cols): ws2.write(curr_r, 1+c_i, r_v[h], get_fmt(base_thin, left=2 if 1+c_i==1 else 1, right=2 if 1+c_i==13 else 1))
+                                ws2.write(curr_r, 1, r_v['Channel'], get_fmt(base_thin, left=2))
+                                d_row = [r_v['200Hz'], r_v['1000Hz'], r_v['4000Hz'], r_v['THD'], r_v['Status']]
+                                for c_idx, val in enumerate(d_row): ws2.write(curr_r, 2+c_idx, val, workbook.add_format(base_thin))
+                                # H~M열: 테두리 없이 깨끗하게 처리
+                                for c in range(7, 13): ws2.write_blank(curr_r, c, "", workbook.add_format({'border':0}))
+                                # N열: 우측 굵은 외곽선만 유지
+                                ws2.write_blank(curr_r, 13, "", get_fmt({'border':0}, right=2))
                                 curr_r += 1
                             curr_r += 1
                 return output.getvalue()
