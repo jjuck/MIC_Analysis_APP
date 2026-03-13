@@ -10,14 +10,14 @@ import base64
 import xlsxwriter
 
 # 1. 페이지 설정 및 UI 상수
-st.set_page_config(page_title="MIC Analysis Tool", page_icon="🎙️", layout="wide")
+st.set_page_config(page_title="MIC Analysis Tool v1.0", page_icon="🎙️", layout="wide")
 FIG_WIDTH, PLOT_HEIGHT = 14, 6
 FONT_SIZE_TITLE, FONT_SIZE_AXIS = 16, 12
 
 # --- [상단 헤더] ---
 col_head1, col_head2 = st.columns([4, 1], vertical_alignment="center")
 with col_head1:
-    st.markdown("<h1>🎙️ MIC Analysis Tool <span style='font-size: 16px; color: gray; font-weight: normal; margin-left: 10px;'>( Provided by JW Lee, JJ Kim )</span></h1>", unsafe_allow_html=True)
+    st.markdown("<h1>🎙️ MIC Analysis Tool v1.0 <span style='font-size: 16px; color: gray; font-weight: normal; margin-left: 10px;'>( Provided by JW Lee, JJ Kim )</span></h1>", unsafe_allow_html=True)
 with col_head2:
     if os.path.exists("logo.png"): st.image("logo.png", width=300)
 st.markdown("---")
