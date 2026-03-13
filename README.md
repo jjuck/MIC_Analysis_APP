@@ -57,9 +57,20 @@ streamlit run App_Main.py
 
 ## 📁 프로젝트 구성 (Project Structure)
 
+### 루트 실행 파일
+
 * `App_Main.py`: 메인 스트림릿 애플리케이션 소스 코드
+* `README.md`: 프로젝트 사용법 및 구조 문서
 * `logo.png` *(선택)*: 화면 우측 상단에 표시될 로고 이미지
 * `excel_icon.png` *(선택)*: 사이드바 엑셀 다운로드 섹션에 표시될 아이콘 이미지
+
+### 보조 폴더
+
+* `archive/old_versions/`: 과거 버전 소스 보관
+* `archive/bugfix/`: 디버깅용 실험 산출물 및 임시 분석 자료 보관
+* `archive/notes/`: 터미널 작업 기록 및 임시 메모 보관
+* `notebooks/develop/`: 개발 실험용 노트북 보관
+* `references/`: 참조용 CSV 및 관리 자료 보관
 
 ## 👨‍💻 개발 및 담당자 (Credits)
 
