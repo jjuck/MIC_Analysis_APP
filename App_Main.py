@@ -1,18 +1,23 @@
-import streamlit as st
-import pandas as pd
+import base64
+import os
+
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
-import io
-import chardet
-import os
-import base64
-import xlsxwriter
+import pandas as pd
+import streamlit as st
+
+from config.limits import LIMIT_POLICY
+from config.product_config import PRODUCT_CATALOG
+from core.application import AnalysisApplicationService
+from core.parser import get_freq_values
+from export.excel_report import ExcelReportBuilder
 
 # 1. 페이지 설정 및 UI 상수
 st.set_page_config(page_title="MIC Analysis Tool v1.0", page_icon="🎙️", layout="wide")
 FIG_WIDTH, PLOT_HEIGHT = 14, 6
 FONT_SIZE_TITLE, FONT_SIZE_AXIS = 16, 12
+APPLICATION_SERVICE = AnalysisApplicationService(PRODUCT_CATALOG, LIMIT_POLICY)
 
 # --- [상단 헤더] ---
 col_head1, col_head2 = st.columns([4, 1], vertical_alignment="center")
@@ -22,113 +27,56 @@ with col_head2:
     if os.path.exists("logo.png"): st.image("logo.png", width=300)
 st.markdown("---")
 
-# 2. 제품군 설정 (명칭: MIC 통일)
-PRODUCT_CONFIGS = {
-    "RH": {"pn": ["96575N1100", "96575GJ100"], "channels": [{"name": "Digital MIC1", "type": "digital", "range": range(51, 101), "thd_idx": 15}, {"name": "Digital MIC2", "type": "digital", "range": range(103, 153), "thd_idx": 18}, {"name": "Digital MIC3", "type": "digital", "range": range(155, 205), "thd_idx": 21}]},
-    "3903(LH Ecall)": {"pn": ["96575N1050", "96575GJ000"], "channels": [{"name": "Ecall MIC (Analog)", "type": "analog", "range": range(6, 47), "thd_idx": 69}, {"name": "Digital MIC1", "type": "digital", "range": range(107, 157), "thd_idx": 217}, {"name": "Digital MIC2", "type": "digital", "range": range(159, 209), "thd_idx": 220}]},
-    "3203(LH non Ecall)": {"pn": ["96575N1000", "96575GJ010"], "channels": [{"name": "Digital MIC1", "type": "digital", "range": range(6, 56), "thd_idx": 116}, {"name": "Digital MIC2", "type": "digital", "range": range(58, 108), "thd_idx": 119}]},
-    "LITE(LH)": {"pn": ["96575NR000", "96575GJ200"], "channels": [{"name": "Analog MIC", "type": "analog", "range": range(6, 47), "thd_idx": 95}]},
-    "LITE(RH)": {"pn": ["96575NR100", "96575GJ300"], "channels": [{"name": "Analog MIC", "type": "analog", "range": range(6, 47), "thd_idx": 95}]}
-}
+# 2. [유틸리티 함수]
 
-# 3. [유틸리티 함수]
-def clean_sn(val):
-    if pd.isna(val): return ""
-    return str(val).replace('"', '').replace("'", "").replace('\t', '').strip()
+def create_fr_plot(report, show_normal, highlight_indices, for_excel=False):
+    product_spec = report.product_spec
+    uploaded_log = report.uploaded_log
+    df = uploaded_log.df
+    current_test_data = uploaded_log.test_data
+    limit_low = uploaded_log.limit_low
+    limit_high = uploaded_log.limit_high
 
-def get_freq_values(cols):
-    return [float(str(c).split('.')[0]) for c in cols]
-
-def detect_info(df):
-    model, prod_date, matched_pn = None, "Unknown", "Unknown"
-    try:
-        for i in range(2, min(15, len(df))):
-            sn_raw = clean_sn(df.iloc[i, 3])
-            if '/' in sn_raw:
-                parts = sn_raw.split('/'); pn_part = parts[0]
-                for m, info in PRODUCT_CONFIGS.items():
-                    if pn_part in info["pn"]: model, matched_pn = m, pn_part; break
-                if len(parts[1]) >= 8: prod_date = f"20{parts[1][2:4]}/{parts[1][4:6]}/{parts[1][6:8]}"
-                if model: break
-    except: pass
-    return model, prod_date, matched_pn
-
-# [판정 함수: Nan 및 전체 불량 유형 반영]
-def classify_sample(row, cols, freqs, limit_low, limit_high, mic_type):
-    val = pd.to_numeric(row[cols], errors='coerce')
-    
-    # 1. 데이터 누락 체크
-    if val.isna().all(): return "Nan"
-        
-    l_low = pd.to_numeric(limit_low[cols], errors='coerce')
-    l_high = pd.to_numeric(limit_high[cols], errors='coerce')
-    is_fail = val.isna() | (val < l_low) | (val > l_high)
-    if not is_fail.any(): return "Normal"
-    
-    no_sig_limit = -45 if mic_type == "digital" else -30
-    if (val < no_sig_limit).any(): return "No Signal"
-    
-    check_pts = [200, 1000, 4000]
-    pt_idx = [np.argmin(np.abs(np.array(freqs) - p)) for p in check_pts]
-    other_idx = [i for i in range(len(cols)) if i not in pt_idx]
-    if not is_fail.iloc[other_idx].any(): return "Margin Out"
-    
-    return "Curved Out"
-
-def get_ui_summary_data(row, ch_info, all_cols, limit_low, limit_high):
-    cols = all_cols[ch_info["range"]]; freqs = get_freq_values(cols)
-    data = {"MIC": ch_info["name"], "points": {}}
-    for t, label in [(200, "200Hz"), (1000, "1kHz"), (4000, "4kHz")]:
-        try:
-            idx = np.argmin(np.abs(np.array(freqs) - t)); col = cols[idx]
-            val = pd.to_numeric(row[col], errors='coerce')
-            low = pd.to_numeric(limit_low[col], errors='coerce')
-            high = pd.to_numeric(limit_high[col], errors='coerce')
-            is_fail = (val < low or val > high) if not pd.isna(val) else False
-            data["points"][label] = {"val": f"{val:.3f}" if not pd.isna(val) else "-", "fail": is_fail}
-        except: data["points"][label] = {"val": "-", "fail": False}
-    thd_idx = ch_info.get("thd_idx")
-    if thd_idx is not None:
-        thd_limit = 1.0 if ch_info["type"] == "analog" else 0.5
-        val = pd.to_numeric(row[all_cols[thd_idx]], errors='coerce')
-        is_fail = (val < 0 or val > thd_limit) if not pd.isna(val) else False
-        data["points"]["THD"] = {"val": f"{val:.3f}" if not pd.isna(val) else "-", "fail": is_fail}
-    else: data["points"]["THD"] = {"val": "N/A", "fail": False}
-    return data
-
-def create_fr_plot(config, df, current_test_data, limit_low, limit_high, show_normal, plotting_normal_indices, highlight_indices, for_excel=False):
-    num_draw = 3 if for_excel else len(config["channels"])
+    num_draw = 3 if for_excel else len(product_spec.channels)
     fig, axes = plt.subplots(num_draw, 1, figsize=(FIG_WIDTH, PLOT_HEIGHT * num_draw))
     if num_draw == 1: axes = [axes]
     if for_excel: fig.patch.set_linewidth(0)
     for i in range(num_draw):
         ax = axes[i]
-        if i < len(config["channels"]):
-            ch = config["channels"][i]; cols = df.columns[ch["range"]]; freqs = get_freq_values(cols)
-            ylim, color, unit = ((-30, 0), 'green', 'dbV') if ch["type"] == 'analog' else ((-45, -25), 'blue', 'dbFS')
+        if i < len(product_spec.channels):
+            ch = product_spec.channels[i]
+            cols = df.columns[ch.column_range]
+            freqs = get_freq_values(cols)
+            ylim, color, unit = ((-30, 0), 'green', 'dbV') if ch.mic_type == 'analog' else ((-45, -25), 'blue', 'dbFS')
             ax.set_xscale('log'); ax.set_xticks([50, 100, 200, 1000, 4000, 10000, 14000])
             ax.get_xaxis().set_major_formatter(ticker.ScalarFormatter()); ax.minorticks_off()
             if show_normal:
-                for n in plotting_normal_indices: ax.plot(freqs, pd.to_numeric(current_test_data.loc[n, cols], errors='coerce'), color=color, alpha=0.7, lw=1.2)
+                for n in report.plotting_normal_indices:
+                    ax.plot(freqs, pd.to_numeric(current_test_data.loc[n, cols], errors='coerce'), color=color, alpha=0.7, lw=1.2)
             for h in highlight_indices: ax.plot(freqs, pd.to_numeric(current_test_data.loc[h, cols], errors='coerce'), color='red', lw=2.5)
             ax.plot(freqs, pd.to_numeric(limit_low[cols], errors='coerce'), 'k--', lw=1.2); ax.plot(freqs, pd.to_numeric(limit_high[cols], errors='coerce'), 'k--', lw=1.2)
-            ax.set_title(ch["name"], fontsize=FONT_SIZE_TITLE, fontweight='bold', pad=15)
+            ax.set_title(ch.name, fontsize=FONT_SIZE_TITLE, fontweight='bold', pad=15)
             ax.set_ylabel(f'Response ({unit})', fontsize=FONT_SIZE_AXIS); ax.set_ylim(ylim); ax.grid(True, alpha=0.4)
         else: ax.axis('off')
     plt.tight_layout(); return fig
 
-def plot_bell_curve_set(config, df, test_data, stats_indices, sel_idx, for_excel=False):
-    num_draw = 3 if for_excel else len(config["channels"])
+def plot_bell_curve_set(report, sel_idx, for_excel=False):
+    product_spec = report.product_spec
+    uploaded_log = report.uploaded_log
+    df = uploaded_log.df
+    test_data = uploaded_log.test_data
+    num_draw = 3 if for_excel else len(product_spec.channels)
     fig, axes = plt.subplots(num_draw, 1, figsize=(FIG_WIDTH, PLOT_HEIGHT * num_draw))
     if num_draw == 1: axes = [axes]
     if for_excel: fig.patch.set_linewidth(0)
     for i in range(num_draw):
         ax = axes[i]
-        if i < len(config["channels"]):
-            ch = config["channels"][i]; col_idx = np.argmin(np.abs(np.array(get_freq_values(df.columns[ch["range"]])) - 1000))
-            v_all = pd.to_numeric(test_data[df.columns[ch["range"]][col_idx]], errors='coerce')
-            v_clean = v_all.iloc[stats_indices].dropna()
-            lcl, ucl = (-11, -9) if ch["type"] == 'analog' else (-38, -36)
+        if i < len(product_spec.channels):
+            ch = product_spec.channels[i]
+            col_idx = np.argmin(np.abs(np.array(get_freq_values(df.columns[ch.column_range])) - 1000))
+            v_all = pd.to_numeric(test_data[df.columns[ch.column_range][col_idx]], errors='coerce')
+            v_clean = v_all.iloc[list(report.stats_indices)].dropna()
+            lcl, ucl = LIMIT_POLICY.cpk_limit_for(ch.mic_type)
             if len(v_clean) >= 2:
                 mu, std = v_clean.mean(), v_clean.std()
                 cpk = min((ucl-mu)/(3*std), (mu-lcl)/(3*std)) if std > 0 else 0
@@ -136,13 +84,13 @@ def plot_bell_curve_set(config, df, test_data, stats_indices, sel_idx, for_excel
                 ax.plot(x_r, p, 'k', lw=2.5, alpha=0.7); ax.fill_between(x_r, p, color='gray', alpha=0.1)
                 ax.axvline(lcl, color='blue', ls='--', lw=1.5); ax.axvline(ucl, color='red', ls='--', lw=1.5)
                 if sel_idx:
-                    sel_v = v_all.iloc[sel_idx].dropna()
+                    sel_v = v_all.iloc[list(sel_idx)].dropna()
                     for v in sel_v:
                         if std > 0:
                             p_v = (1/(std * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((v - mu) / std)**2)
                             ax.scatter(v, p_v, color='red', s=200, zorder=5, edgecolors='white', linewidth=1.5)
                 ax.text(0.95, 0.75, "Cpk: " + str(round(cpk, 2)), transform=ax.transAxes, ha='right', va='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8), fontsize=FONT_SIZE_AXIS, fontweight='bold')
-                ax.set_title(f"{ch['name']} - Distribution", fontsize=FONT_SIZE_TITLE, fontweight='bold', pad=15); ax.set_xlim(lcl-2, ucl+2); ax.grid(True, alpha=0.2)
+                ax.set_title(f"{ch.name} - Distribution", fontsize=FONT_SIZE_TITLE, fontweight='bold', pad=15); ax.set_xlim(lcl-2, ucl+2); ax.grid(True, alpha=0.2)
         else: ax.axis('off')
     plt.tight_layout(); return fig
 
@@ -156,57 +104,38 @@ def get_base64_image(img_path):
 uploaded_file = st.sidebar.file_uploader("CSV 로그 파일을 업로드하세요.", type=['csv'])
 
 if uploaded_file:
-    raw_bytes = uploaded_file.read()
-    det_enc = chardet.detect(raw_bytes)['encoding']
-    df = pd.read_csv(io.StringIO(raw_bytes.decode(det_enc if det_enc else 'utf-8-sig', errors='replace')), low_memory=False)
-    df.columns = [str(c) for c in df.columns]
+    df = APPLICATION_SERVICE.read_dataframe(uploaded_file)
 
     if df is not None:
-        detected_model, prod_date, detected_pn = detect_info(df)
-        model_list = list(PRODUCT_CONFIGS.keys())
-        model_type = st.sidebar.selectbox("제품 모델 선택", options=model_list, index=model_list.index(detected_model) if detected_model in model_list else 0)
-        config = PRODUCT_CONFIGS[model_type]; st.sidebar.markdown("---")
+        detection = APPLICATION_SERVICE.detect_product(df)
+        model_list = list(PRODUCT_CATALOG.model_names())
+        model_type = st.sidebar.selectbox("제품 모델 선택", options=model_list, index=model_list.index(detection.model_name) if detection.model_name in model_list else 0)
+        product_spec = PRODUCT_CATALOG.get(model_type)
+        st.sidebar.markdown("---")
         
         st.sidebar.header("✔️ 정상 시료 설정")
         show_normal = st.sidebar.checkbox("정상 시료 FR 표시", value=True)
 
-        sn_col, limit_low, limit_high = df.columns[3], df.iloc[0], df.iloc[1]
-        raw_test_data = df.iloc[2:].dropna(subset=[sn_col])
-        test_data = raw_test_data[raw_test_data[sn_col].astype(str).str.contains('/', na=False)].reset_index(drop=True)
+        report = APPLICATION_SERVICE.analyze(df, model_type, detection)
+        test_data = report.uploaded_log.test_data
 
         if len(test_data) > 0:
-            sample_info, issue_indices, stats_indices, plotting_normal_indices = {}, [], [], []
-            ch_stats_data = {ch["name"]: {"pass": 0, "fail": 0, "vals_1k": []} for ch in config["channels"]}
-
-            for idx, row in test_data.iterrows():
-                ch_results = []
-                is_pure_normal, is_fail, is_defect = True, False, False
-                for ch in config["channels"]:
-                    cols = df.columns[ch["range"]]; freqs = get_freq_values(cols)
-                    status = classify_sample(row, cols, freqs, limit_low, limit_high, ch["type"])
-                    
-                    # [중요] 불량 판정 로직 업데이트 (Nan, No Signal 등 포함)
-                    if status in ["No Signal", "Curved Out", "Nan"]: is_defect = True
-                    if status != "Normal": is_pure_normal, is_fail = False, True
-                    
-                    val_1k = pd.to_numeric(row[cols[np.argmin(np.abs(np.array(freqs) - 1000))]], errors='coerce')
-                    ch_stats_data[ch["name"]]["vals_1k"].append(val_1k)
-                    if status == "Normal": ch_stats_data[ch["name"]]["pass"] += 1
-                    else: ch_stats_data[ch["name"]]["fail"] += 1
-                    
-                    res_data = get_ui_summary_data(row, ch, df.columns, limit_low, limit_high)
-                    res_data["Status"] = status
-                    ch_results.append(res_data)
-                
-                sample_info[idx] = {"results": ch_results, "sn": clean_sn(row[sn_col])}
-                if is_fail: issue_indices.append(idx)
-                if is_pure_normal: plotting_normal_indices.append(idx)
-                if not is_defect: stats_indices.append(idx)
+            issue_indices = report.issue_indices
+            channel_statistics = report.channel_statistics_by_name()
+            limit_low = report.uploaded_log.limit_low
+            limit_high = report.uploaded_log.limit_high
+            detected_pn = report.detection.detected_pn
+            prod_date = report.detection.prod_date
+            total_qty = report.total_qty
+            total_fail = report.total_fail
+            total_pass = report.total_pass
+            yield_val = report.yield_percentage
+            defect_counts = report.defect_summary.counts
+            total_f_ch = report.defect_summary.total_failure_channels
 
             # --- [UI Dashboard] ---
             st.subheader("📝 Production Dashboard")
             d1, d2, d3 = st.columns([1.2, 1.3, 2.5])
-            total_qty, total_fail = len(test_data), len(issue_indices); total_pass = total_qty - total_fail; yield_val = total_pass / total_qty * 100
             
             with d1: st.markdown(f"**Model P/N:** `{detected_pn}`\n\n**Prod. Date:** `{prod_date}`\n\n**Quantity:** `{len(test_data)} EA`")
             with d2:
@@ -235,12 +164,10 @@ if uploaded_file:
                 <tr><th rowspan="2" style="border:1px solid #bdc3c7; padding:8px;">MIC</th><th colspan="7" style="border:1px solid #bdc3c7; padding:8px;">Statistics</th></tr>
                 <tr><th style="border:1px solid #bdc3c7; padding:5px;">Pass</th><th style="border:1px solid #bdc3c7; padding:5px;">Fail</th><th style="border:1px solid #bdc3c7; padding:5px;">Yield</th><th style="border:1px solid #bdc3c7; padding:5px;">Min</th><th style="border:1px solid #bdc3c7; padding:5px;">Max</th><th style="border:1px solid #bdc3c7; padding:5px;">Avg</th><th style="border:1px solid #bdc3c7; padding:5px;">Stdev</th></tr>
                 </thead><tbody>"""
-                for ch_n, stat in ch_stats_data.items():
-                    v = np.array(stat["vals_1k"])[stats_indices]; v = v[~np.isnan(v)]
-                    v_min, v_max, v_avg, v_std = (v.min(), v.max(), v.mean(), v.std()) if len(v) > 0 else (0,0,0,0)
-                    yld = f"{(stat['pass']/total_qty)*100:.1f}%"
+                for ch_n, stat in channel_statistics.items():
+                    v_min, v_max, v_avg, v_std, yld = stat.summary_metrics(report.stats_indices, total_qty)
                     s_html += f"<tr><td style='border:1px solid #bdc3c7; padding:5px; font-weight:bold; background-color:#F9F9F9;'>{ch_n}</td>"
-                    s_html += f"<td style='border:1px solid #bdc3c7; padding:5px;'>{stat['pass']}</td><td style='border:1px solid #bdc3c7; padding:5px;'>{stat['fail']}</td>"
+                    s_html += f"<td style='border:1px solid #bdc3c7; padding:5px;'>{stat.pass_count}</td><td style='border:1px solid #bdc3c7; padding:5px;'>{stat.fail_count}</td>"
                     s_html += f"<td style='border:1px solid #bdc3c7; padding:5px;'>{yld}</td><td style='border:1px solid #bdc3c7; padding:5px;'>{v_min:.3f}</td>"
                     s_html += f"<td style='border:1px solid #bdc3c7; padding:5px;'>{v_max:.3f}</td><td style='border:1px solid #bdc3c7; padding:5px;'>{v_avg:.3f}</td><td style='border:1px solid #bdc3c7; padding:5px;'>{v_std:.3f}</td></tr>"
                 s_html += "</tbody></table>"
@@ -259,10 +186,11 @@ if uploaded_file:
             
             sel_idx = []
             for i in issue_indices:
-                if st.sidebar.checkbox(f"SN: {sample_info[i]['sn']}", key=f"ch_{i}"): sel_idx.append(i)
+                sample = report.sample_by_index(i)
+                if st.sidebar.checkbox(f"SN: {sample.serial_number}", key=f"ch_{i}"): sel_idx.append(i)
 
-            with tab_fr: st.pyplot(create_fr_plot(config, df, test_data, limit_low, limit_high, show_normal, plotting_normal_indices, sel_idx))
-            with tab_dist: st.pyplot(plot_bell_curve_set(config, df, test_data, stats_indices, sel_idx))
+            with tab_fr: st.pyplot(create_fr_plot(report, show_normal, sel_idx))
+            with tab_dist: st.pyplot(plot_bell_curve_set(report, sel_idx))
             
             with tab_detail:
                 # 공정 관리 한계 테이블 (s_html과 동일 스타일 적용)
@@ -285,22 +213,22 @@ if uploaded_file:
                 
                 if sel_idx:
                     for idx in sel_idx:
-                        st.markdown(f"📄 **SN: {sample_info[idx]['sn']}**", unsafe_allow_html=True)
+                        sample = report.sample_by_index(idx)
+                        st.markdown(f"📄 **SN: {sample.serial_number}**", unsafe_allow_html=True)
                         p_html = """<table style="width:100%; border-collapse:collapse; border:1px solid #bdc3c7; font-size:13px; text-align:center; margin-bottom:20px;">
                         <thead style="background-color:#F2F2F2; font-weight:bold;">
                         <tr><th rowspan="3" style="border:1px solid #bdc3c7; padding:8px;">MIC</th><th colspan="5" style="border:1px solid #bdc3c7; padding:8px;">Parameter</th></tr>
                         <tr><th colspan="3" style="border:1px solid #bdc3c7; padding:5px;">Frequency Response</th><th style="border:1px solid #bdc3c7; padding:5px;">THD</th><th rowspan="2" style="border:1px solid #bdc3c7; padding:5px;">Status</th></tr>
                         <tr><th style="border:1px solid #bdc3c7; padding:5px;">200Hz</th><th style="border:1px solid #bdc3c7; padding:5px;">1kHz</th><th style="border:1px solid #bdc3c7; padding:5px;">4kHz</th><th style="border:1px solid #bdc3c7; padding:5px;">1kHz</th></tr>
                         </thead><tbody>"""
-                        for ch_res in sample_info[idx]['results']:
-                            p_html += f"<tr><td style='border:1px solid #bdc3c7; padding:5px; font-weight:bold; background-color:#F9F9F9;'>{ch_res['MIC']}</td>"
+                        for channel in sample.channels:
+                            p_html += f"<tr><td style='border:1px solid #bdc3c7; padding:5px; font-weight:bold; background-color:#F9F9F9;'>{channel.mic_name}</td>"
                             for label in ["200Hz", "1kHz", "4kHz", "THD"]:
-                                pt = ch_res["points"][label]
-                                color = "color:red; font-weight:bold;" if pt["fail"] else ""
-                                p_html += f"<td style='border:1px solid #bdc3c7; padding:5px; {color}'>{pt['val']}</td>"
-                            fail_status = ["No Signal", "Curved Out", "Margin Out", "Nan"]
-                            status_style = "color:red; font-weight:bold;" if ch_res['Status'] in fail_status else ""
-                            p_html += f"<td style='border:1px solid #bdc3c7; padding:5px; {status_style}'>{ch_res['Status']}</td></tr>"
+                                point = channel.point(label)
+                                color = "color:red; font-weight:bold;" if point.is_fail else ""
+                                p_html += f"<td style='border:1px solid #bdc3c7; padding:5px; {color}'>{point.display_value}</td>"
+                            status_style = "color:red; font-weight:bold;" if channel.status in LIMIT_POLICY.defect_types else ""
+                            p_html += f"<td style='border:1px solid #bdc3c7; padding:5px; {status_style}'>{channel.status}</td></tr>"
                         p_html += "</tbody></table>"
                         st.markdown(p_html, unsafe_allow_html=True)
                 else: st.warning("사이드바에서 결함 시료를 선택하여 상세 데이터를 확인하세요.")
@@ -308,15 +236,7 @@ if uploaded_file:
             # --- [네 번째 탭 구현: 리스트 방식 + 한 줄 합치기(Minify) + 전체 대비 비율 계산] ---
             with tab_summary:
                 st.subheader("📊 전체 결함 시료 불량 유형 요약")
-                
-                d_types = ["Margin Out", "Curved Out", "No Signal", "Nan"]
-                d_counts = {t: 0 for t in d_types}
-                total_f_ch = 0
-                for idx in issue_indices:
-                    for ch_res in sample_info[idx]['results']:
-                        st_val = ch_res.get('Status', 'Normal')
-                        if st_val in d_counts: d_counts[st_val] += 1; total_f_ch += 1
-                
+
                 # HTML 조립 (들여쓰기 제거 및 한 줄 처리)
                 html_parts = []
                 html_parts.append("<table style='width:100%; border-collapse:collapse; border:1px solid #bdc3c7; font-size:13px; text-align:center;'>")
@@ -326,8 +246,8 @@ if uploaded_file:
                 html_parts.append("<th style='border:1px solid #bdc3c7; padding:8px;'>비율 (Rate %)</th>")
                 html_parts.append("</tr></thead><tbody>")
                 
-                for t in d_types:
-                    qty = d_counts[t]
+                for t in LIMIT_POLICY.defect_types:
+                    qty = defect_counts[t]
                     # [수정] 전체 수량(total_qty) 대비 비율 계산
                     rate = (qty / total_qty * 100) if total_qty > 0 else 0
                     html_parts.append("<tr>")
@@ -347,189 +267,11 @@ if uploaded_file:
                 st.markdown("".join(html_parts), unsafe_allow_html=True)
                 st.caption(f"※ 비율(Rate)은 전체 검사 수량({total_qty} EA) 대비 발생 비율입니다.")
 
-            # --- [generate_excel 함수 정의 (서식 변수 포함)] ---
-            def generate_excel():
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    workbook = writer.book
-                    
-                    # 1. 서식 정의 (여기서 정의해야 에러 없음)
-                    base_blue = {'bold': True, 'bg_color': '#DEEAF6', 'align': 'center', 'valign': 'vcenter', 'border': 1}
-                    base_green = {'bold': True, 'bg_color': '#E2EFDA', 'align': 'center', 'valign': 'vcenter', 'border': 1}
-                    base_thin = {'align': 'center', 'valign': 'vcenter', 'border': 1}
-                    base_yld_val = {'bold': True, 'font_size': 18, 'font_color': '#2E7D32', 'align': 'center', 'valign': 'vcenter', 'border': 1, 'num_format': '0.0%'}
-                    base_red_thin = {'align': 'center', 'valign': 'vcenter', 'border': 1, 'font_color': 'red', 'bold': True}
-                    base_sn_box = {'bold': True, 'bg_color': '#F2F2F2', 'top': 1, 'bottom': 1, 'align': 'left', 'valign': 'vcenter'}
-
-                    def get_fmt(base_dict, top=None, bottom=None, left=None, right=None):
-                        props = base_dict.copy()
-                        if top is not None: props['top'] = top
-                        if bottom is not None: props['bottom'] = bottom
-                        if left is not None: props['left'] = left
-                        if right is not None: props['right'] = right
-                        return workbook.add_format(props)
-
-                    # [함수 A] 대시보드
-                    def write_dashboard(ws, last_row_idx=37, is_sheet1=False):
-                        ws.set_column('A:A', 3); ws.set_column('B:B', 15); ws.set_column('C:C', 22); ws.set_column('D:F', 10); ws.set_column('G:N', 11)
-                        
-                        ws.merge_range('B2:F2', '📝 PRODUCTION SUMMARY', get_fmt(base_blue, top=2, left=2, bottom=1, right=1))
-                        ws.merge_range('G2:N2', '📈 CHANNEL STATISTICS', get_fmt(base_green, top=2, right=2, bottom=1, left=0))
-                        
-                        sums = [("Model Type", model_type), ("Model P/N", detected_pn), ("Prod. Date", prod_date), ("Quantity", str(total_qty) + " EA")]
-                        for i, (k, v) in enumerate(sums):
-                            r = 2 + i
-                            ws.write(r, 1, k, get_fmt(base_blue, left=2, bottom=2 if r==5 else 1, top=1, right=1))
-                            ws.write(r, 2, v, get_fmt(base_thin, bottom=2 if r==5 else 1, top=1, left=1, right=1))
-                        
-                        ws.write(2, 3, 'PASS', get_fmt(base_blue, top=1, bottom=1, left=1, right=1))
-                        ws.merge_range('E3:F3', total_pass, get_fmt(base_thin, top=1, bottom=1, left=1, right=1))
-                        ws.write(3, 3, 'FAIL', get_fmt(base_blue, top=1, bottom=1, left=1, right=1))
-                        ws.merge_range('E4:F4', total_fail, get_fmt(base_thin, top=1, bottom=1, left=1, right=1))
-                        ws.merge_range('D5:D6', 'Yield', get_fmt(base_blue, bottom=2, top=1, left=1, right=1))
-                        ws.merge_range('E5:F6', yield_val/100, get_fmt(base_yld_val, bottom=2, top=1, left=1, right=1))
-
-                        ws.write(2, 6, "MIC", get_fmt(base_green, top=1, bottom=1, left=0, right=1))
-                        heads = ["Pass", "Fail", "Yield", "Min", "Max", "Avg", "Stdev"]
-                        for i, h in enumerate(heads): ws.write(2, 7+i, h, get_fmt(base_green, right=2 if 7+i==13 else 1, top=1, bottom=1, left=1))
-                        
-                        for r_idx in range(4):
-                            r = 3 + r_idx; is_l = (r == 5)
-                            if r_idx < len(config["channels"]):
-                                ch_n = config["channels"][r_idx]["name"]; stat = ch_stats_data[ch_n]
-                                v = np.array(stat["vals_1k"])[stats_indices]; v = v[~np.isnan(v)]
-                                v_min, v_max, v_avg, v_std = (v.min(), v.max(), v.mean(), v.std()) if len(v) > 0 else (0,0,0,0)
-                                ws.write(r, 6, ch_n, get_fmt(base_thin, bottom=2 if is_l else 1, top=1, left=0, right=1))
-                                vals = [stat['pass'], stat['fail'], f"{(stat['pass']/total_qty)*100:.1f}%", f"{v_min:.3f}", f"{v_max:.3f}", f"{v_avg:.3f}", f"{v_std:.3f}"]
-                                for i, val in enumerate(vals): ws.write(r, 7+i, val, get_fmt(base_thin, right=2 if 7+i==13 else 1, bottom=2 if is_l else 1, top=1, left=1))
-                            else:
-                                for c in range(6, 14): ws.write_blank(r, c, "", get_fmt({'border':0}, right=2 if c==13 else 0, bottom=2 if is_l else 0, left=0 if c==6 else 0))
-
-                        for r_f in range(6, last_row_idx - 1):
-                            if is_sheet1 and r_f == 36:
-                                for c in range(1, 14): ws.write_blank(r_f, c, "", get_fmt({'border':0}, bottom=2, left=2 if c==1 else None, right=2 if c==13 else None))
-                                continue
-                            ws.write_blank(r_f, 1, "", get_fmt({'border':0}, left=2))
-                            ws.write_blank(r_f, 13, "", get_fmt({'border':0}, right=2))
-                        
-                        ws.write_blank(last_row_idx-1, 1, "", get_fmt({'border':0}, left=2, bottom=2))
-                        for c_b in range(2, 13): ws.write_blank(last_row_idx-1, c_b, "", get_fmt({'border':0}, bottom=2))
-                        ws.write_blank(last_row_idx-1, 13, "", get_fmt({'border':0}, right=2, bottom=2))
-
-                    # [함수 B] 공정 관리 한계 및 불량 Summary (전체 비율 적용)
-                    def write_summary_section(ws, start_row, is_sheet1=False):
-                        top_l = 2 if is_sheet1 else 1
-                        ws.merge_range(start_row, 1, start_row, 6, '⚠️ 공정 관리 한계', get_fmt(base_blue, left=2, top=top_l))
-                        ws.merge_range(start_row+1, 1, start_row+2, 1, 'MIC Type', get_fmt(base_blue, left=2))
-                        ws.merge_range(start_row+1, 2, start_row+2, 2, 'Limit', get_fmt(base_blue))
-                        ws.merge_range(start_row+1, 3, start_row+1, 5, 'Frequency Response', get_fmt(base_blue))
-                        ws.write(start_row+1, 6, 'THD', get_fmt(base_blue))
-                        for ci, h in enumerate(['200Hz', '1kHz', '4kHz', '1kHz']): ws.write(start_row+2, 3+ci, h, get_fmt(base_blue))
-                        
-                        specs = [["Digital MIC", "UCL", -35, -36, -35, 0.5], ["Digital MIC", "LCL", -39, -38, -39, "-"], ["Analog MIC", "UCL", -14.5, -9, -8, 1.0], ["Analog MIC", "LCL", -18.5, -11, -12, "-"]]
-                        for r_idx, row_data in enumerate(specs):
-                            r = start_row + 3 + r_idx
-                            if r_idx % 2 == 0: ws.merge_range(r, 1, r+1, 1, row_data[0], get_fmt(base_blue, left=2))
-                            ws.write(r, 2, row_data[1], get_fmt(base_blue))
-                            for c_idx, val in enumerate(row_data[2:]): ws.write(r, 3+c_idx, val, get_fmt(base_thin))
-
-                        # 우측 Summary (6열)
-                        d_counts = {"Margin Out": 0, "Curved Out": 0, "No Signal": 0, "Nan": 0}
-                        total_f_ch = 0
-                        for idx in issue_indices:
-                            for ch_res in sample_info[idx]['results']:
-                                st = ch_res['Status']
-                                if st in d_counts: d_counts[st] += 1; total_f_ch += 1
-
-                        ws.merge_range(start_row, 8, start_row, 13, '📊 불량 유형 Summary', get_fmt(base_green, right=2, top=top_l))
-                        ws.merge_range(start_row+1, 8, start_row+1, 9, "Defect Type", get_fmt(base_green))
-                        ws.merge_range(start_row+1, 10, start_row+1, 11, "Quantity", get_fmt(base_green))
-                        ws.merge_range(start_row+1, 12, start_row+1, 13, "Rate (%)", get_fmt(base_green, right=2))
-                        
-                        for i, t in enumerate(["Margin Out", "Curved Out", "No Signal", "Nan"]):
-                            r = start_row + 2 + i
-                            qty = d_counts[t]
-                            # [수정] 전체 수량 대비 비율
-                            rate = (qty / total_qty * 100) if total_qty > 0 else 0
-                            ws.merge_range(r, 8, r, 9, t, get_fmt(base_thin))
-                            ws.merge_range(r, 10, r, 11, qty, get_fmt(base_thin))
-                            ws.merge_range(r, 12, r, 13, f"{rate:.1f}%", get_fmt(base_thin, right=2))
-                        
-                        # [수정] 전체 불량률
-                        total_rate = (total_f_ch / total_qty * 100) if total_qty > 0 else 0
-                        ws.merge_range(start_row+6, 8, start_row+6, 9, "Total", get_fmt(base_green))
-                        ws.merge_range(start_row+6, 10, start_row+6, 11, total_f_ch, get_fmt(base_thin))
-                        ws.merge_range(start_row+6, 12, start_row+6, 13, f"{total_rate:.1f}%", get_fmt(base_thin, right=2))
-
-                    # [함수 C] 결함 시료 유닛
-                    def write_failure_unit(ws, r_start, c_base, idx, total_last_row):
-                        r = r_start
-                        if c_base == 1:
-                            ws.merge_range(r, 1, r, 2, sample_info[idx]['sn'], get_fmt(base_sn_box, left=2, right=1))
-                            for c in range(3, 7): ws.write_blank(r, c, "", get_fmt({'border':0}, bottom=1))
-                        else:
-                            ws.merge_range(r, 8, r, 10, sample_info[idx]['sn'], get_fmt(base_sn_box, left=1, right=1))
-                            for c in range(11, 13): ws.write_blank(r, c, "", get_fmt({'border':0}, bottom=1))
-                            ws.write_blank(r, 13, "", get_fmt({'border':0}, right=2, bottom=1))
-                        r += 1
-                        s_r = r
-                        ws.merge_range(r, c_base, r+2, c_base, 'MIC', get_fmt(base_blue, left=2 if c_base==1 else 1))
-                        ws.merge_range(r, c_base+1, r, c_base+4, 'Parameter', get_fmt(base_blue))
-                        ws.write_blank(r, c_base+5, "", get_fmt(base_blue, right=2 if c_base==8 else 1)); r += 1
-                        ws.merge_range(r, c_base+1, r, c_base+3, 'Frequency Response', get_fmt(base_blue))
-                        ws.write(r, c_base+4, 'THD', get_fmt(base_blue)); r += 1
-                        for ci, h in enumerate(['200Hz', '1kHz', '4kHz', '1kHz']): ws.write(r, c_base+1+ci, h, get_fmt(base_blue))
-                        ws.merge_range(s_r, c_base+5, r, c_base+5, 'Status', get_fmt(base_blue, right=2 if c_base==8 else 1)); r += 1
-                        rows_w = 0
-                        fail_list = ["No Signal", "Curved Out", "Margin Out", "Nan"]
-                        for ch_res in sample_info[idx]['results']:
-                            ws.write(r, c_base, ch_res['MIC'], get_fmt(base_thin, left=2 if c_base==1 else 1))
-                            for ci, label in enumerate(["200Hz", "1kHz", "4kHz", "THD"]):
-                                pt = ch_res["points"][label]
-                                ws.write(r, c_base+1+ci, pt["val"], get_fmt(base_red_thin if pt["fail"] else base_thin))
-                            ws.write(r, c_base+5, ch_res['Status'], get_fmt(base_red_thin if ch_res['Status'] in fail_list else base_thin, right=2 if c_base==8 else 1))
-                            r += 1; rows_w += 1
-                        for _ in range(3 - rows_w + 1):
-                            is_final = (r == total_last_row - 1)
-                            b_line = 2 if is_final else 0
-                            ws.write_blank(r, c_base, "", get_fmt({'border':0}, left=2 if c_base==1 else 0, bottom=b_line))
-                            for c in range(c_base+1, c_base+5): ws.write_blank(r, c, "", get_fmt({'border':0}, bottom=b_line))
-                            ws.write_blank(r, c_base+5, "", get_fmt({'border':0}, right=2 if c_base==8 else 0, bottom=b_line))
-                            r += 1
-                        return r
-
-                    ws1 = workbook.add_worksheet('📈 분석 리포트'); write_dashboard(ws1, 86, is_sheet1=True)
-                    fig_fr = create_fr_plot(config, df, test_data, limit_low, limit_high, show_normal, plotting_normal_indices, sel_idx, for_excel=True)
-                    buf_f = io.BytesIO(); fig_fr.savefig(buf_f, format='png', dpi=100); plt.close(fig_fr)
-                    ws1.insert_image('B7', 'fr.png', {'image_data': buf_f, 'x_scale': 0.41, 'y_scale': 0.35, 'x_offset': 10, 'y_offset': 10})
-                    fig_dist = plot_bell_curve_set(config, df, test_data, stats_indices, sel_idx, for_excel=True)
-                    buf_d = io.BytesIO(); fig_dist.savefig(buf_d, format='png', dpi=100); plt.close(fig_dist)
-                    ws1.insert_image('H7', 'dist.png', {'image_data': buf_d, 'x_scale': 0.41, 'y_scale': 0.35, 'x_offset': 10, 'y_offset': 10})
-                    
-                    write_summary_section(ws1, 37, is_sheet1=True)
-                    ws1.merge_range(45, 1, 45, 13, '🔍 DETAILED FAILURE LOG', get_fmt(base_blue, left=2, right=2))
-                    c_l, c_r = 46, 46
-                    for i, idx in enumerate(sel_idx[:10]):
-                        if i % 2 == 0: c_l = write_failure_unit(ws1, c_l, 1, idx, 86)
-                        else: c_r = write_failure_unit(ws1, c_r, 8, idx, 86)
-
-                    ws2 = workbook.add_worksheet('🔍 결함상세')
-                    num_p = (len(sel_idx) + 1) // 2
-                    l_f_ws2 = max(23, 15 + (num_p * 8))
-                    write_dashboard(ws2, l_f_ws2)
-                    write_summary_section(ws2, 6)
-                    ws2.merge_range(14, 1, 14, 13, '🔍 DETAILED FAILURE LOG', get_fmt(base_blue, left=2, right=2))
-                    cl2, cr2 = 15, 15
-                    for i, idx in enumerate(sel_idx):
-                        if i % 2 == 0: cl2 = write_failure_unit(ws2, cl2, 1, idx, l_f_ws2)
-                        else: cr2 = write_failure_unit(ws2, cr2, 8, idx, l_f_ws2)
-
-                return output.getvalue()
-
             st.sidebar.markdown("---") 
             img_b64 = get_base64_image("excel_icon.png")
             if img_b64:
                 st.sidebar.markdown(f'<div style="display: flex; align-items: center; margin-bottom: 10px;"><img src="data:image/png;base64,{img_b64}" width="38" style="margin-right: 12px;"><span style="font-size: 24px; font-weight: 700; color: #31333f;">Excel Export</span></div>', unsafe_allow_html=True)
             else: st.sidebar.header("📊 Excel Export")
-            st.sidebar.download_button(label="📥 Download Report", data=generate_excel(), file_name=f"Report_{detected_pn}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            excel_data = ExcelReportBuilder(report, LIMIT_POLICY, show_normal, sel_idx, create_fr_plot, plot_bell_curve_set).build()
+            st.sidebar.download_button(label="📥 Download Report", data=excel_data, file_name=f"Report_{detected_pn}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 else: st.info("사이드바에서 CSV 로그 파일을 업로드하세요.")
