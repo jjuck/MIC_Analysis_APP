@@ -5,8 +5,8 @@ import io
 import chardet
 import pandas as pd
 
-from config.models import ProductCatalog
-from core.models import ProductDetection
+from config.specs import ProductCatalog
+from core.domain import ProductDetection
 
 
 def clean_sn(val):
@@ -63,12 +63,3 @@ class ProductDetector:
                 break
 
         return ProductDetection(model_name=model_name, prod_date=prod_date, detected_pn=detected_pn)
-
-
-def read_uploaded_csv(uploaded_file):
-    return UploadedCsvReader().read(uploaded_file)
-
-
-def detect_info(df, product_catalog: ProductCatalog):
-    detection = ProductDetector(product_catalog).detect(df)
-    return detection.model_name, detection.prod_date, detection.detected_pn

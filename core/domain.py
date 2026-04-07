@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from config.models import ProductSpec
+from config.specs import ProductSpec
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,6 +13,24 @@ class ProductDetection:
     model_name: str | None
     prod_date: str
     detected_pn: str
+
+    @property
+    def report_date_code(self) -> str:
+        digits = "".join(ch for ch in self.prod_date if ch.isdigit())
+        if len(digits) >= 8:
+            return digits[2:8]
+        return digits or "unknown"
+
+    @property
+    def report_pn_code(self) -> str:
+        cleaned = self.detected_pn.strip()
+        if len(cleaned) >= 5:
+            return cleaned[-5:]
+        return cleaned or "unknown"
+
+    @property
+    def report_basename(self) -> str:
+        return f"{self.report_date_code}_{self.report_pn_code}_REPORT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,34 +78,42 @@ class SampleAnalysis:
         defect_statuses = {"No Signal", "Curved Out", "Nan"}
         return any(channel.status in defect_statuses for channel in self.channels)
 
+    def primary_defect_status(self, priority_order: tuple[str, ...]) -> str:
+        statuses = [channel.status for channel in self.channels if channel.status != "Normal"]
+        for defect_type in priority_order:
+            if defect_type in statuses:
+                return defect_type
+        return statuses[0] if statuses else "Normal"
+
 
 @dataclass(slots=True)
 class ChannelStatistics:
     mic_name: str
     pass_count: int = 0
     fail_count: int = 0
-    values_at_1k: list[float] = field(default_factory=list)
+    values_by_label: dict[str, list[float]] = field(default_factory=lambda: {"200Hz": [], "1kHz": [], "4kHz": []})
 
-    def record(self, status: str, value_at_1k: float) -> None:
-        self.values_at_1k.append(value_at_1k)
+    def record(self, status: str, point_values: dict[str, float]) -> None:
+        for label in self.values_by_label:
+            self.values_by_label[label].append(point_values.get(label, np.nan))
         if status == "Normal":
             self.pass_count += 1
             return
         self.fail_count += 1
 
-    def summary_metrics(self, stats_indices: tuple[int, ...], total_qty: int) -> tuple[float, float, float, float, str]:
-        values = np.array(self.values_at_1k)[list(stats_indices)]
+    def summary_metrics(self, stats_indices: tuple[int, ...], total_qty: int, label: str = "1kHz") -> tuple[float, float, float, float, float]:
+        values = np.array(self.values_by_label[label])[list(stats_indices)]
         values = values[~np.isnan(values)]
         if len(values) == 0:
-            return 0.0, 0.0, 0.0, 0.0, "0.0%"
-        yield_rate = f"{(self.pass_count / total_qty) * 100:.1f}%" if total_qty > 0 else "0.0%"
+            return 0.0, 0.0, 0.0, 0.0, 0.0
+        yield_rate = (self.pass_count / total_qty) if total_qty > 0 else 0.0
         return values.min(), values.max(), values.mean(), values.std(), yield_rate
 
 
 @dataclass(frozen=True, slots=True)
 class DefectSummary:
     counts: dict[str, int]
-    total_failure_channels: int
+    total_failure_samples: int
 
     def rate_for(self, defect_type: str, total_qty: int) -> float:
         if total_qty <= 0:
@@ -97,7 +123,7 @@ class DefectSummary:
     def total_rate(self, total_qty: int) -> float:
         if total_qty <= 0:
             return 0.0
-        return self.total_failure_channels / total_qty * 100
+        return self.total_failure_samples / total_qty * 100
 
 
 @dataclass(frozen=True, slots=True)

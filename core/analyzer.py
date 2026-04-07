@@ -5,9 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from config.limits import LIMIT_POLICY
-from config.models import ChannelSpec, LimitPolicy, ProductSpec
-from core.models import (
+from config.specs import ChannelSpec, LimitPolicy, ProductSpec
+from core.domain import (
     AnalysisReport,
     ChannelAnalysis,
     ChannelStatistics,
@@ -117,18 +116,19 @@ class ChannelClassifier:
 class DefectSummaryService:
     def __init__(self, limit_policy: LimitPolicy):
         self._limit_policy = limit_policy
+        self._priority_order = ("Curved Out", "No Signal", "Margin Out", "Nan")
 
     def build(self, samples: tuple[SampleAnalysis, ...], issue_indices: tuple[int, ...]) -> DefectSummary:
         counts = {defect_type: 0 for defect_type in self._limit_policy.defect_types}
-        total_failure_channels = 0
+        total_failure_samples = 0
 
         for idx in issue_indices:
-            for channel in samples[idx].channels:
-                if channel.status in counts:
-                    counts[channel.status] += 1
-                    total_failure_channels += 1
+            defect_type = samples[idx].primary_defect_status(self._priority_order)
+            if defect_type in counts:
+                counts[defect_type] += 1
+                total_failure_samples += 1
 
-        return DefectSummary(counts=counts, total_failure_channels=total_failure_channels)
+        return DefectSummary(counts=counts, total_failure_samples=total_failure_samples)
 
 
 class AnalysisService:
@@ -202,8 +202,11 @@ class AnalysisService:
                 limit_low=uploaded_log.limit_low,
                 limit_high=uploaded_log.limit_high,
             )
-            value_at_1k = pd.to_numeric(row[context.center_1k_col], errors="coerce")
-            statistics[context.channel_spec.name].record(channel_analysis.status, value_at_1k)
+            point_values = {
+                label: pd.to_numeric(row[column_name], errors="coerce")
+                for label, column_name in context.point_columns.items()
+            }
+            statistics[context.channel_spec.name].record(channel_analysis.status, point_values)
             channel_analyses.append(channel_analysis)
 
         return SampleAnalysis(
@@ -211,70 +214,3 @@ class AnalysisService:
             serial_number=clean_sn(row[uploaded_log.sn_column]),
             channels=tuple(channel_analyses),
         )
-
-
-def analyze_dataframe(df, model_type, product_spec, detected_model, prod_date, detected_pn):
-    detection = ProductDetection(model_name=detected_model, prod_date=prod_date, detected_pn=detected_pn)
-    report = AnalysisService(LIMIT_POLICY).analyze(df, product_spec, detection)
-
-    class AnalysisResult:
-        def __init__(self, analysis_report: AnalysisReport):
-            self.detection = analysis_report.detection
-            self.report = analysis_report
-            self.product_spec = analysis_report.product_spec
-            self.df = analysis_report.uploaded_log.df
-            self.test_data = analysis_report.uploaded_log.test_data
-            self.limit_low = analysis_report.uploaded_log.limit_low
-            self.limit_high = analysis_report.uploaded_log.limit_high
-            self.sn_col = analysis_report.uploaded_log.sn_column
-            self.issue_indices = list(analysis_report.issue_indices)
-            self.stats_indices = list(analysis_report.stats_indices)
-            self.plotting_normal_indices = list(analysis_report.plotting_normal_indices)
-            self.total_qty = analysis_report.total_qty
-            self.total_fail = analysis_report.total_fail
-            self.total_pass = analysis_report.total_pass
-            self.yield_val = analysis_report.yield_percentage
-            self.detected_model = analysis_report.detection.model_name
-            self.detected_pn = analysis_report.detection.detected_pn
-            self.prod_date = analysis_report.detection.prod_date
-            self.model_type = model_type
-            self.config = product_spec
-            self.sample_info = {
-                sample.index: {
-                    "sn": sample.serial_number,
-                    "results": [
-                        {
-                            "MIC": channel.mic_name,
-                            "Status": channel.status,
-                            "points": {
-                                label: {"val": point.display_value, "fail": point.is_fail}
-                                for label, point in channel.points.items()
-                            },
-                        }
-                        for channel in sample.channels
-                    ],
-                }
-                for sample in analysis_report.samples
-            }
-            self.ch_stats_data = {
-                stat.mic_name: {
-                    "pass": stat.pass_count,
-                    "fail": stat.fail_count,
-                    "vals_1k": stat.values_at_1k,
-                }
-                for stat in analysis_report.channel_statistics
-            }
-
-    return AnalysisResult(report)
-
-
-def get_defect_counts(sample_info, issue_indices):
-    counts = {defect_type: 0 for defect_type in LIMIT_POLICY.defect_types}
-    total_failure_channels = 0
-    for idx in issue_indices:
-        for channel_result in sample_info[idx]["results"]:
-            status = channel_result.get("Status", "Normal")
-            if status in counts:
-                counts[status] += 1
-                total_failure_channels += 1
-    return counts, total_failure_channels

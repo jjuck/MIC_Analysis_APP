@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pandas as pd
 
-from config.models import LimitPolicy, ProductCatalog
+from config.specs import LimitPolicy, ProductCatalog
 from core.analyzer import AnalysisService
-from core.models import AnalysisReport, ProductDetection
+from core.domain import AnalysisReport, ProductDetection
 from core.parser import ProductDetector, UploadedCsvReader
 
 

@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from config.models import LimitPolicy
+from config.specs import LimitPolicy
 
 
 class ExcelReportBuilder:
@@ -31,8 +31,13 @@ class ExcelReportBuilder:
         self._base_blue = {'bold': True, 'bg_color': '#DEEAF6', 'align': 'center', 'valign': 'vcenter', 'border': 1}
         self._base_green = {'bold': True, 'bg_color': '#E2EFDA', 'align': 'center', 'valign': 'vcenter', 'border': 1}
         self._base_thin = {'align': 'center', 'valign': 'vcenter', 'border': 1}
+        self._base_thin_num = {'align': 'center', 'valign': 'vcenter', 'border': 1, 'num_format': '0.000'}
+        self._base_thin_int = {'align': 'center', 'valign': 'vcenter', 'border': 1, 'num_format': '0'}
+        self._base_thin_qty = {'align': 'center', 'valign': 'vcenter', 'border': 1, 'num_format': '0" EA"'}
+        self._base_thin_pct = {'align': 'center', 'valign': 'vcenter', 'border': 1, 'num_format': '0.0%'}
         self._base_yld_val = {'bold': True, 'font_size': 18, 'font_color': '#2E7D32', 'align': 'center', 'valign': 'vcenter', 'border': 1, 'num_format': '0.0%'}
         self._base_red_thin = {'align': 'center', 'valign': 'vcenter', 'border': 1, 'font_color': 'red', 'bold': True}
+        self._base_red_thin_num = {'align': 'center', 'valign': 'vcenter', 'border': 1, 'font_color': 'red', 'bold': True, 'num_format': '0.000'}
         self._base_sn_box = {'bold': True, 'bg_color': '#F2F2F2', 'top': 1, 'bottom': 1, 'align': 'left', 'valign': 'vcenter'}
 
     def build(self):
@@ -53,6 +58,25 @@ class ExcelReportBuilder:
         if right is not None:
             props['right'] = right
         return self._workbook.add_format(props)
+
+    def _write_number_or_text(self, ws, row, col, value, number_fmt, text_fmt):
+        if isinstance(value, (int, float, np.integer, np.floating)) and not pd.isna(value):
+            ws.write_number(row, col, float(value), number_fmt)
+            return
+
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped in {"", "-", "N/A"}:
+                ws.write(row, col, stripped, text_fmt)
+                return
+            try:
+                ws.write_number(row, col, float(stripped), number_fmt)
+                return
+            except ValueError:
+                ws.write(row, col, stripped, text_fmt)
+                return
+
+        ws.write(row, col, value, text_fmt)
 
     def _write_report_sheets(self):
         ws1 = self._workbook.add_worksheet('📈 분석 리포트')
@@ -104,12 +128,15 @@ class ExcelReportBuilder:
             ("Model Type", self._report.product_spec.model_name),
             ("Model P/N", self._report.detection.detected_pn),
             ("Prod. Date", self._report.detection.prod_date),
-            ("Quantity", str(self._report.total_qty) + " EA"),
+            ("Quantity", self._report.total_qty),
         ]
         for i, (k, v) in enumerate(sums):
             r = 2 + i
             ws.write(r, 1, k, self._get_fmt(self._base_blue, left=2, bottom=2 if r == 5 else 1, top=1, right=1))
-            ws.write(r, 2, v, self._get_fmt(self._base_thin, bottom=2 if r == 5 else 1, top=1, left=1, right=1))
+            if k == "Quantity":
+                ws.write_number(r, 2, float(v), self._get_fmt(self._base_thin_qty, bottom=2 if r == 5 else 1, top=1, left=1, right=1))
+            else:
+                ws.write(r, 2, v, self._get_fmt(self._base_thin, bottom=2 if r == 5 else 1, top=1, left=1, right=1))
 
         ws.write(2, 3, 'PASS', self._get_fmt(self._base_blue, top=1, bottom=1, left=1, right=1))
         ws.merge_range('E3:F3', self._report.total_pass, self._get_fmt(self._base_thin, top=1, bottom=1, left=1, right=1))
@@ -131,9 +158,15 @@ class ExcelReportBuilder:
                 stat = self._channel_statistics[channel_name]
                 v_min, v_max, v_avg, v_std, yield_rate = stat.summary_metrics(self._report.stats_indices, self._report.total_qty)
                 ws.write(r, 6, channel_name, self._get_fmt(self._base_thin, bottom=2 if is_l else 1, top=1, left=0, right=1))
-                vals = [stat.pass_count, stat.fail_count, yield_rate, f"{v_min:.3f}", f"{v_max:.3f}", f"{v_avg:.3f}", f"{v_std:.3f}"]
+                vals = [stat.pass_count, stat.fail_count, yield_rate, v_min, v_max, v_avg, v_std]
                 for i, val in enumerate(vals):
-                    ws.write(r, 7 + i, val, self._get_fmt(self._base_thin, right=2 if 7 + i == 13 else 1, bottom=2 if is_l else 1, top=1, left=1))
+                    col = 7 + i
+                    if i in {0, 1}:
+                        ws.write_number(r, col, float(val), self._get_fmt(self._base_thin_int, right=2 if col == 13 else 1, bottom=2 if is_l else 1, top=1, left=1))
+                    elif i == 2:
+                        ws.write_number(r, col, float(val), self._get_fmt(self._base_thin_pct, right=2 if col == 13 else 1, bottom=2 if is_l else 1, top=1, left=1))
+                    else:
+                        ws.write_number(r, col, float(val), self._get_fmt(self._base_thin_num, right=2 if col == 13 else 1, bottom=2 if is_l else 1, top=1, left=1))
             else:
                 for c in range(6, 14):
                     ws.write_blank(r, c, "", self._get_fmt({'border': 0}, right=2 if c == 13 else 0, bottom=2 if is_l else 0, left=0 if c == 6 else 0))
@@ -179,13 +212,13 @@ class ExcelReportBuilder:
             qty = self._report.defect_summary.counts[defect_type]
             rate = self._report.defect_summary.rate_for(defect_type, self._report.total_qty)
             ws.merge_range(r, 8, r, 9, defect_type, self._get_fmt(self._base_thin))
-            ws.merge_range(r, 10, r, 11, qty, self._get_fmt(self._base_thin))
-            ws.merge_range(r, 12, r, 13, f"{rate:.1f}%", self._get_fmt(self._base_thin, right=2))
+            ws.merge_range(r, 10, r, 11, qty, self._get_fmt(self._base_thin_int))
+            ws.merge_range(r, 12, r, 13, rate / 100, self._get_fmt(self._base_thin_pct, right=2))
 
         total_rate = self._report.defect_summary.total_rate(self._report.total_qty)
         ws.merge_range(start_row + 6, 8, start_row + 6, 9, "Total", self._get_fmt(self._base_green))
-        ws.merge_range(start_row + 6, 10, start_row + 6, 11, self._report.defect_summary.total_failure_channels, self._get_fmt(self._base_thin))
-        ws.merge_range(start_row + 6, 12, start_row + 6, 13, f"{total_rate:.1f}%", self._get_fmt(self._base_thin, right=2))
+        ws.merge_range(start_row + 6, 10, start_row + 6, 11, self._report.defect_summary.total_failure_samples, self._get_fmt(self._base_thin_int))
+        ws.merge_range(start_row + 6, 12, start_row + 6, 13, total_rate / 100, self._get_fmt(self._base_thin_pct, right=2))
 
     def _write_failure_unit(self, ws, r_start, c_base, idx, total_last_row):
         sample = self._report.sample_by_index(idx)
@@ -217,7 +250,9 @@ class ExcelReportBuilder:
             ws.write(r, c_base, channel.mic_name, self._get_fmt(self._base_thin, left=2 if c_base == 1 else 1))
             for ci, label in enumerate(["200Hz", "1kHz", "4kHz", "THD"]):
                 point = channel.point(label)
-                ws.write(r, c_base + 1 + ci, point.display_value, self._get_fmt(self._base_red_thin if point.is_fail else self._base_thin))
+                fmt = self._get_fmt(self._base_red_thin_num if point.is_fail else self._base_thin_num)
+                text_fmt = self._get_fmt(self._base_red_thin if point.is_fail else self._base_thin)
+                self._write_number_or_text(ws, r, c_base + 1 + ci, point.display_value, fmt, text_fmt)
             ws.write(r, c_base + 5, channel.status, self._get_fmt(self._base_red_thin if channel.status in self._limit_policy.defect_types else self._base_thin, right=2 if c_base == 8 else 1))
             r += 1
             rows_w += 1
@@ -230,21 +265,3 @@ class ExcelReportBuilder:
             ws.write_blank(r, c_base + 5, "", self._get_fmt({'border': 0}, right=2 if c_base == 8 else 0, bottom=b_line))
             r += 1
         return r
-
-
-def generate_excel_report(
-    analysis_report,
-    limit_policy,
-    show_normal,
-    selected_indices,
-    create_fr_plot,
-    plot_bell_curve_set,
-):
-    return ExcelReportBuilder(
-        analysis_report=analysis_report,
-        limit_policy=limit_policy,
-        show_normal=show_normal,
-        selected_indices=selected_indices,
-        create_fr_plot=create_fr_plot,
-        plot_bell_curve_set=plot_bell_curve_set,
-    ).build()

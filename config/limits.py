@@ -1,4 +1,4 @@
-from config.models import LimitPolicy
+from config.specs import LimitPolicy
 
 
 CHECK_POINTS = (200, 1000, 4000)

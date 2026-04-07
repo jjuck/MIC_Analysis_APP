@@ -1,4 +1,4 @@
-from config.models import ChannelSpec, ProductCatalog, ProductSpec
+from config.specs import ChannelSpec, ProductCatalog, ProductSpec
 
 
 PRODUCT_CATALOG = ProductCatalog(
